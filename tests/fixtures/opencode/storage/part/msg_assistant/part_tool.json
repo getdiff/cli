@@ -1,0 +1,1 @@
+{"time_created":1772562457202,"data":{"type":"tool","callID":"call_read","tool":"read","state":{"status":"completed","input":{"filePath":"/Users/ericand/project/src/app.ts"},"output":"<path>/Users/ericand/project/src/app.ts</path>","time":{"start":1772562457202,"end":1772562457210}}}}
