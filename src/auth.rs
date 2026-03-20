@@ -32,11 +32,10 @@ pub fn config_path() -> PathBuf {
 /// Removes the config file to log out.
 pub fn logout() -> Result<()> {
     let path = config_path();
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-        eprintln!("Logged out. Removed {}", path.display());
-    } else {
-        eprintln!("Not logged in.");
+    match std::fs::remove_file(&path) {
+        Ok(()) => eprintln!("Logged out. Removed {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => eprintln!("Not logged in."),
+        Err(e) => return Err(e.into()),
     }
     Ok(())
 }
