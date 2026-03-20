@@ -120,7 +120,7 @@ fn test_opencode_session_parses() {
     assert_eq!(session["session_id"], "ses_test");
     assert_eq!(session["tool"], "opencode");
     assert_eq!(session["tool_version"], "1.2.15");
-    assert_eq!(session["project_path"], "/Users/ericand/project");
+    assert_eq!(session["project_path"], "/Users/testuser/project");
     assert_eq!(session["primary_model"], "gpt-5.3-codex");
 }
 
@@ -140,11 +140,11 @@ fn test_opencode_tokens_tools_and_files() {
     assert!(
         modified
             .iter()
-            .any(|path| path == "/Users/ericand/project/src/app.ts")
+            .any(|path| path == "/Users/testuser/project/src/app.ts")
     );
     assert!(
         read.iter()
-            .any(|path| path == "/Users/ericand/project/src/app.ts")
+            .any(|path| path == "/Users/testuser/project/src/app.ts")
     );
 
     let telemetry = &session["reliability_telemetry"];
@@ -171,11 +171,11 @@ fn test_opencode_exported_sample_parses() {
     assert!(
         modified
             .iter()
-            .any(|path| path == "/Users/ericand/exported/src/integrations.ts")
+            .any(|path| path == "/Users/testuser/exported/src/integrations.ts")
     );
     assert!(
         read.iter()
-            .any(|path| path == "/Users/ericand/exported/src/integrations.ts")
+            .any(|path| path == "/Users/testuser/exported/src/integrations.ts")
     );
 }
 
@@ -545,4 +545,180 @@ fn test_stop_reasons_captured() {
     // Earlier ones should have "tool_use"
     let first = assistant_msgs.first().unwrap();
     assert_eq!(first["stop_reason"], "tool_use");
+}
+
+// -----------------------------------------------------------------------
+// OpenClaw tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_openclaw_session_parses() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    assert_eq!(
+        session["session_id"],
+        "437b8b06-a88e-47d0-8c95-51ddc15a919a"
+    );
+    assert_eq!(session["tool"], "openclaw");
+    assert_eq!(session["project_path"], "/Users/testuser/project");
+    assert_eq!(session["primary_model"], "claude-opus-4-6");
+}
+
+#[test]
+fn test_openclaw_message_counts() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    // 2 user text messages + 3 tool results = 5 user-role messages
+    // 4 assistant messages (1 text-only intro, 3 with tool calls, 1 final text)
+    assert_eq!(session["user_message_count"].as_u64(), Some(5));
+    assert_eq!(session["assistant_message_count"].as_u64(), Some(5));
+}
+
+#[test]
+fn test_openclaw_tool_calls() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    // 3 tool calls: read, exec, exec
+    assert_eq!(session["total_tool_calls"].as_u64(), Some(3));
+
+    let tool_names: Vec<&str> = session["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tool_name"].as_str().unwrap())
+        .collect();
+    assert!(tool_names.contains(&"read"));
+    assert!(tool_names.contains(&"exec"));
+}
+
+#[test]
+fn test_openclaw_tokens() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    // Sum of all assistant usage.input: 3 + 3 + 1 + 1 + 1 = 9
+    assert_eq!(session["total_input_tokens"].as_u64(), Some(9));
+    // Sum of all assistant usage.output: 517 + 93 + 89 + 65 + 84 = 848
+    assert_eq!(session["total_output_tokens"].as_u64(), Some(848));
+    assert!(session["total_cache_read_tokens"].as_u64().unwrap() > 0);
+    assert!(session["total_cache_creation_tokens"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_openclaw_thinking_detected() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+    let messages = session["messages"].as_array().unwrap();
+
+    let first_assistant = messages.iter().find(|m| m["role"] == "assistant").unwrap();
+    assert_eq!(first_assistant["has_thinking"], true);
+
+    // Thinking content should NOT appear in text
+    let text = first_assistant["text"].as_str().unwrap_or("");
+    assert!(!text.contains("Let me introduce"));
+}
+
+#[test]
+fn test_openclaw_stop_reasons_normalized() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+    let messages = session["messages"].as_array().unwrap();
+
+    let assistant_msgs: Vec<_> = messages
+        .iter()
+        .filter(|m| m["role"] == "assistant")
+        .collect();
+
+    // Last assistant message should have normalized stop reason
+    let last = assistant_msgs.last().unwrap();
+    assert_eq!(last["stop_reason"], "end_turn");
+
+    // Tool use messages should have normalized stop reason
+    let tool_msg = assistant_msgs
+        .iter()
+        .find(|m| !m["tool_calls"].as_array().unwrap().is_empty())
+        .unwrap();
+    assert_eq!(tool_msg["stop_reason"], "tool_use");
+}
+
+#[test]
+fn test_openclaw_reliability_telemetry() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    let telemetry = &session["reliability_telemetry"];
+    assert_eq!(telemetry["tool_success_count"].as_u64(), Some(3));
+    assert_eq!(telemetry["tool_error_count"].as_u64(), Some(0));
+}
+
+#[test]
+fn test_openclaw_cost_estimated() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    let cost = session["estimated_cost_usd"].as_f64().unwrap();
+    assert!(cost > 0.0, "Cost should be positive");
+}
+
+#[test]
+fn test_openclaw_files_tracked() {
+    let session = parse_fixture_with_provider("openclaw-session.jsonl", Some("open-claw"));
+
+    let read = session["files_read"].as_array().unwrap();
+    assert!(
+        read.iter()
+            .any(|p| p.as_str().unwrap().contains("SKILL.md")),
+        "Should track the read file"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Cursor tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_cursor_session_parses() {
+    let session = parse_fixture_with_provider("cursor-session.jsonl", Some("cursor"));
+
+    assert_eq!(session["tool"], "cursor");
+    // 2 user + 4 assistant = 6 messages
+    assert_eq!(session["user_message_count"].as_u64(), Some(2));
+    assert_eq!(session["assistant_message_count"].as_u64(), Some(4));
+    assert_eq!(session["message_count"].as_u64(), Some(6));
+}
+
+#[test]
+fn test_cursor_strips_user_query_wrapper() {
+    let session = parse_fixture_with_provider("cursor-session.jsonl", Some("cursor"));
+    let messages = session["messages"].as_array().unwrap();
+
+    let first_user = messages.iter().find(|m| m["role"] == "user").unwrap();
+    let text = first_user["text"].as_str().unwrap();
+    assert!(
+        !text.contains("<user_query>"),
+        "Should strip user_query tags, got: {}",
+        text
+    );
+    assert!(
+        text.contains("weather"),
+        "Should preserve user text content"
+    );
+}
+
+#[test]
+fn test_cursor_has_timestamps_from_file_metadata() {
+    let session = parse_fixture_with_provider("cursor-session.jsonl", Some("cursor"));
+
+    // File metadata provides started_at and ended_at
+    assert!(
+        session["started_at"].as_str().is_some(),
+        "Should have started_at from file birthtime"
+    );
+    assert!(
+        session["ended_at"].as_str().is_some(),
+        "Should have ended_at from file mtime"
+    );
+}
+
+#[test]
+fn test_cursor_no_tool_calls() {
+    let session = parse_fixture_with_provider("cursor-session.jsonl", Some("cursor"));
+
+    // Cursor doesn't log tool calls in transcripts
+    assert_eq!(session["total_tool_calls"].as_u64(), Some(0));
 }

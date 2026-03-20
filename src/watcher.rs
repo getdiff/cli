@@ -254,6 +254,8 @@ impl WatchConfig {
             ProviderKind::ClaudeCode => parser::claude_code::default_projects_dir(),
             ProviderKind::Codex => parser::codex::default_sessions_dir(),
             ProviderKind::OpenCode => parser::opencode::default_data_dir(),
+            ProviderKind::OpenClaw => parser::openclaw::default_sessions_dir(),
+            ProviderKind::Cursor => parser::cursor::default_projects_dir(),
         }
     }
 

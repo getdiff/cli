@@ -1,0 +1,6 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nwhat is the weather like in san diego\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll check the latest weather for San Diego using a web search."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Right now in San Diego it's about 59F (15C) and partly cloudy, with high humidity and patchy fog. Winds are light and variable."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<user_query>\nwhere is the readme file, let's add a line about this being amazing product\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I'll locate the README file and add a line praising the product."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"I found the README.md at the repo root and added a line: OpenClaw is an amazing product."}]}}

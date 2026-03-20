@@ -1,5 +1,7 @@
 pub mod claude_code;
 pub mod codex;
+pub mod cursor;
+pub mod openclaw;
 pub mod opencode;
 
 use anyhow::{Result, bail};
@@ -17,6 +19,9 @@ pub enum ProviderKind {
     Codex,
     #[value(alias = "open-code", alias = "opencode")]
     OpenCode,
+    #[value(alias = "open-claw")]
+    OpenClaw,
+    Cursor,
 }
 
 impl ProviderKind {
@@ -25,6 +30,8 @@ impl ProviderKind {
             Self::ClaudeCode => "claude_code",
             Self::Codex => "codex",
             Self::OpenCode => "opencode",
+            Self::OpenClaw => "openclaw",
+            Self::Cursor => "cursor",
         }
     }
 
@@ -44,6 +51,8 @@ impl ProviderKind {
             Self::ClaudeCode => claude_code::discover_sessions(root_override).map(map_locators),
             Self::Codex => codex::discover_sessions(root_override).map(map_locators),
             Self::OpenCode => opencode::discover_sessions(root_override).map(map_locators),
+            Self::OpenClaw => openclaw::discover_sessions(root_override).map(map_locators),
+            Self::Cursor => cursor::discover_sessions(root_override).map(map_locators),
         }
     }
 
@@ -56,6 +65,8 @@ impl ProviderKind {
             Self::ClaudeCode => claude_code::find_session_file(session_id, root_override)?,
             Self::Codex => codex::find_session_file(session_id, root_override)?,
             Self::OpenCode => opencode::find_session_file(session_id, root_override)?,
+            Self::OpenClaw => openclaw::find_session_file(session_id, root_override)?,
+            Self::Cursor => cursor::find_session_file(session_id, root_override)?,
         };
 
         Ok(SessionLocator {
@@ -80,6 +91,12 @@ impl ProviderKind {
             Self::Codex => codex::parse_session(path, org_id, engineer_id, machine_id, redactor),
             Self::OpenCode => {
                 opencode::parse_session(path, org_id, engineer_id, machine_id, redactor)
+            }
+            Self::OpenClaw => {
+                openclaw::parse_session(path, org_id, engineer_id, machine_id, redactor)
+            }
+            Self::Cursor => {
+                cursor::parse_session(path, org_id, engineer_id, machine_id, redactor)
             }
         }
     }
@@ -114,6 +131,8 @@ impl ProviderKind {
             Self::ClaudeCode => config_snapshot::capture_claude_snapshot(project_path).map(Some),
             Self::Codex => Ok(None),
             Self::OpenCode => Ok(None),
+            Self::OpenClaw => Ok(None),
+            Self::Cursor => Ok(None),
         }
     }
 }
@@ -143,6 +162,8 @@ pub fn provider_from_tool(tool: &str) -> Option<ProviderKind> {
         "claude_code" => Some(ProviderKind::ClaudeCode),
         "codex" => Some(ProviderKind::Codex),
         "opencode" => Some(ProviderKind::OpenCode),
+        "openclaw" => Some(ProviderKind::OpenClaw),
+        "cursor" => Some(ProviderKind::Cursor),
         _ => None,
     }
 }
@@ -169,6 +190,8 @@ mod tests {
             ProviderKind::ClaudeCode,
             ProviderKind::Codex,
             ProviderKind::OpenCode,
+            ProviderKind::OpenClaw,
+            ProviderKind::Cursor,
         ] {
             assert_eq!(super::provider_from_tool(provider.as_str()), Some(provider));
         }
