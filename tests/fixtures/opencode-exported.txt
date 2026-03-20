@@ -1,0 +1,91 @@
+=== SESSION ===
+{
+  "id": "ses_exported",
+  "directory": "/Users/testuser/exported",
+  "version": "1.2.15",
+  "time_created": 1772562457000,
+  "time_updated": 1772562459000
+}
+
+=== MESSAGES ===
+{
+  "id": "msg_user",
+  "session_id": "ses_exported",
+  "time_created": 1772562457100,
+  "data": {
+    "role": "user"
+  }
+}
+
+{
+  "id": "msg_assistant",
+  "session_id": "ses_exported",
+  "time_created": 1772562457200,
+  "data": {
+    "role": "assistant",
+    "modelID": "gpt-5.3-codex",
+    "finish": "tool-calls",
+    "tokens": {
+      "input": 220,
+      "output": 70,
+      "cache": {
+        "read": 10,
+        "write": 0
+      }
+    }
+  }
+}
+
+=== PARTS ===
+{
+  "id": "prt_user_text",
+  "message_id": "msg_user",
+  "time_created": 1772562457101,
+  "data": {
+    "type": "text",
+    "text": "Please inspect integrations."
+  }
+}
+
+{
+  "id": "prt_assistant_reasoning",
+  "message_id": "msg_assistant",
+  "time_created": 1772562457201,
+  "data": {
+    "type": "reasoning",
+    "text": "**Inspecting files**"
+  }
+}
+
+{
+  "id": "prt_assistant_tool",
+  "message_id": "msg_assistant",
+  "time_created": 1772562457202,
+  "data": {
+    "type": "tool",
+    "callID": "call_glob",
+    "tool": "glob",
+    "state": {
+      "status": "completed",
+      "input": {
+        "pattern": "**/*integrations*",
+        "path": "/Users/testuser/exported"
+      },
+      "output": "/Users/testuser/exported/src/integrations.ts",
+      "time": {
+        "start": 1772562457202,
+        "end": 1772562457210
+      }
+    }
+  }
+}
+
+{
+  "id": "prt_assistant_patch",
+  "message_id": "msg_assistant",
+  "time_created": 1772562457203,
+  "data": {
+    "type": "patch",
+    "files": ["/Users/testuser/exported/src/integrations.ts"]
+  }
+}

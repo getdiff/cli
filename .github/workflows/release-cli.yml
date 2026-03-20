@@ -1,0 +1,141 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux ARM)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/getdiff dist/
+          cd dist && tar czf getdiff-${{ matrix.target }}.tar.gz getdiff
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: getdiff-${{ matrix.target }}
+          path: dist/getdiff-${{ matrix.target }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub release
+        run: |
+          gh release create "${GITHUB_REF_NAME}" artifacts/*.tar.gz \
+            --title "getdiff ${GITHUB_REF_NAME}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update formula with SHA256 hashes
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          python3 - homebrew/getdiff.rb "$VERSION" artifacts getdiff/cli <<'PYEOF'
+          import hashlib, re, sys
+
+          formula_path, version, artifacts_dir, repo_slug = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+          targets = [
+              "aarch64-apple-darwin",
+              "x86_64-apple-darwin",
+              "aarch64-unknown-linux-gnu",
+              "x86_64-unknown-linux-gnu",
+          ]
+
+          with open(formula_path) as f:
+              lines = f.readlines()
+
+          # Update version
+          for i, line in enumerate(lines):
+              if 'version "' in line:
+                  lines[i] = re.sub(r'version ".*"', f'version "{version}"', line)
+
+          # Update release URLs
+          for i, line in enumerate(lines):
+              if 'url "https://github.com/' in line:
+                  lines[i] = re.sub(
+                      r'https://github\.com/.+/releases/download/v#\{version\}/getdiff-',
+                      f'https://github.com/{repo_slug}/releases/download/v#{{version}}/getdiff-',
+                      line,
+                  )
+
+          # Update SHA256 for each target
+          for target in targets:
+              tarball = f"{artifacts_dir}/getdiff-{target}.tar.gz"
+              sha = hashlib.sha256(open(tarball, "rb").read()).hexdigest()
+              found = False
+              for i, line in enumerate(lines):
+                  if f"getdiff-{target}.tar.gz" in line:
+                      for j in range(i + 1, min(i + 3, len(lines))):
+                          if "sha256" in lines[j]:
+                              lines[j] = re.sub(r'sha256 ".*"', f'sha256 "{sha}"', lines[j])
+                              found = True
+                              break
+                      break
+              if not found:
+                  print(f"ERROR: target {target} not found in formula", file=sys.stderr)
+                  sys.exit(1)
+
+          with open(formula_path, "w") as f:
+              f.writelines(lines)
+          print(f"Formula updated to v{version}")
+          PYEOF
+
+      - name: Update homebrew-tap repo
+        run: |
+          git clone https://x-access-token:${GITHUB_TOKEN}@github.com/getdiff/homebrew-tap.git /tmp/homebrew-tap
+          cp homebrew/getdiff.rb /tmp/homebrew-tap/Formula/getdiff.rb
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/getdiff.rb
+          git diff --staged --quiet || git commit -m "Update getdiff to v${GITHUB_REF_NAME#v}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.TAP_TOKEN }}

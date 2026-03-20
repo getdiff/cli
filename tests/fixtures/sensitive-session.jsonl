@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"sensitive-session","timestamp":"2026-03-01T10:00:00Z","version":"2.1.63","gitBranch":"main","cwd":"/Users/test/work/api","message":{"role":"user","content":"Email jane@example.com and use sk-live-1234567890abcdefghijkl for this test. Card 4242 4242 4242 4242."}}
+{"type":"user","sessionId":"sensitive-session","timestamp":"2026-03-01T10:00:05Z","message":{"role":"user","content":"Do not expose 415-555-0123 or password=supersecretvalue123 in the final output."}}

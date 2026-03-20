@@ -1,0 +1,1 @@
+{"id":"msg_assistant","sessionID":"ses_test","role":"assistant","time":{"created":1772562457200,"completed":1772562457300},"modelID":"gpt-5.3-codex","providerID":"openai","finish":"tool-calls","tokens":{"input":120,"output":30,"cache":{"read":50,"write":5}}}
