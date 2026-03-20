@@ -107,9 +107,7 @@ impl ProviderKind {
             Self::OpenClaw => {
                 openclaw::parse_session(path, org_id, engineer_id, machine_id, redactor)
             }
-            Self::Cursor => {
-                cursor::parse_session(path, org_id, engineer_id, machine_id, redactor)
-            }
+            Self::Cursor => cursor::parse_session(path, org_id, engineer_id, machine_id, redactor),
             Self::Copilot => {
                 copilot::parse_session(path, org_id, engineer_id, machine_id, redactor)
             }

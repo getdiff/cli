@@ -768,7 +768,11 @@ fn test_copilot_tool_calls() {
         !tool_names.contains(&"report_intent"),
         "report_intent should be filtered out"
     );
-    assert!(tool_names.contains(&"web_fetch") || tool_names.contains(&"view") || tool_names.contains(&"bash"));
+    assert!(
+        tool_names.contains(&"web_fetch")
+            || tool_names.contains(&"view")
+            || tool_names.contains(&"bash")
+    );
 }
 
 #[test]
@@ -833,7 +837,10 @@ fn test_copilot_tool_errors_tracked() {
 #[test]
 fn test_gemenicli_session_parses() {
     let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
-    assert_eq!(session["session_id"], "c98fc85a-d855-420a-b5a2-7d6330a7f422");
+    assert_eq!(
+        session["session_id"],
+        "c98fc85a-d855-420a-b5a2-7d6330a7f422"
+    );
     assert_eq!(session["tool"], "gemenicli");
     assert_eq!(session["primary_model"], "gemini-3-flash-preview");
 }
@@ -849,8 +856,12 @@ fn test_gemenicli_message_counts() {
 fn test_gemenicli_tool_calls() {
     let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
     assert!(session["total_tool_calls"].as_u64().unwrap() >= 5);
-    let tool_names: Vec<&str> = session["tool_calls"].as_array().unwrap().iter()
-        .map(|t| t["tool_name"].as_str().unwrap()).collect();
+    let tool_names: Vec<&str> = session["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tool_name"].as_str().unwrap())
+        .collect();
     assert!(tool_names.contains(&"google_web_search") || tool_names.contains(&"grep_search"));
 }
 
@@ -883,8 +894,15 @@ fn test_gemenicli_files_tracked() {
     let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
     let read = session["files_read"].as_array().unwrap();
     let modified = session["files_modified"].as_array().unwrap();
-    assert!(read.iter().any(|p| p.as_str().unwrap().contains("README.md")));
-    assert!(modified.iter().any(|p| p.as_str().unwrap().contains("README.md")));
+    assert!(
+        read.iter()
+            .any(|p| p.as_str().unwrap().contains("README.md"))
+    );
+    assert!(
+        modified
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("README.md"))
+    );
 }
 
 #[test]

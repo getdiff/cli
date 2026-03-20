@@ -91,10 +91,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
     };
 
     if !root.exists() {
-        anyhow::bail!(
-            "Gemini CLI tmp directory not found at {}",
-            root.display()
-        );
+        anyhow::bail!("Gemini CLI tmp directory not found at {}", root.display());
     }
 
     let filename = format!("session-{}.json", session_id);
@@ -114,11 +111,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
         }
     }
 
-    anyhow::bail!(
-        "Session {} not found under {}",
-        session_id,
-        root.display()
-    )
+    anyhow::bail!("Session {} not found under {}", session_id, root.display())
 }
 
 pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
@@ -197,21 +190,19 @@ pub fn parse_session(
     let retry_count: u32 = 0;
     let mut previous_user_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
-    let session_id = raw_session
-        .session_id
-        .unwrap_or_else(|| {
-            session_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .and_then(|s| s.strip_prefix("session-"))
-                .unwrap_or_else(|| {
-                    session_path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                })
-                .to_string()
-        });
+    let session_id = raw_session.session_id.unwrap_or_else(|| {
+        session_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("session-"))
+            .unwrap_or_else(|| {
+                session_path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown")
+            })
+            .to_string()
+    });
 
     for raw_msg in &raw_session.messages {
         // Track timestamps
@@ -333,8 +324,7 @@ pub fn parse_session(
                             ) {
                                 let latency_ms = (end - start).num_milliseconds();
                                 if latency_ms >= 0 {
-                                    tool_latencies_ms
-                                        .push(latency_ms.min(u32::MAX as i64) as u32);
+                                    tool_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
                                 }
                             }
                         }
@@ -408,10 +398,7 @@ pub fn parse_session(
 
     let total_tool_calls: u32 = tool_call_summaries.iter().map(|t| t.count).sum();
     let user_count = messages.iter().filter(|m| m.role == "user").count() as u32;
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .count() as u32;
+    let assistant_count = messages.iter().filter(|m| m.role == "assistant").count() as u32;
 
     files_modified.sort();
     files_modified.dedup();

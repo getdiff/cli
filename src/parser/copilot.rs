@@ -58,11 +58,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
         return Ok(candidate);
     }
 
-    anyhow::bail!(
-        "Session {} not found under {}",
-        session_id,
-        root.display()
-    )
+    anyhow::bail!("Session {} not found under {}", session_id, root.display())
 }
 
 pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
@@ -259,12 +255,16 @@ pub fn parse_session(
                                 INPUT_SUMMARY_MAX,
                             ));
 
-                            track_file_access(&tool_name, &args, &mut files_modified, &mut files_read);
+                            track_file_access(
+                                &tool_name,
+                                &args,
+                                &mut files_modified,
+                                &mut files_read,
+                            );
 
                             let entry = tool_counts.entry(tool_name.clone()).or_insert((0, 0));
                             entry.0 += 1;
-                            tool_use_id_to_name
-                                .insert(tool_call_id.clone(), tool_name.clone());
+                            tool_use_id_to_name.insert(tool_call_id.clone(), tool_name.clone());
                             if let Some(ref ts) = raw.timestamp
                                 && let Ok(tool_ts) = DateTime::parse_from_rfc3339(ts)
                                     .map(|dt| dt.with_timezone(&Utc))
@@ -333,7 +333,10 @@ pub fn parse_session(
                     continue;
                 }
 
-                let success = data.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                let success = data
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 let is_error = !success;
 
                 // Track model
@@ -404,8 +407,8 @@ pub fn parse_session(
                         .entry(tool_call_id.to_string())
                         .or_insert_with(|| tool_name.to_string());
                     if let Some(ref ts) = raw.timestamp
-                        && let Ok(tool_ts) = DateTime::parse_from_rfc3339(ts)
-                            .map(|dt| dt.with_timezone(&Utc))
+                        && let Ok(tool_ts) =
+                            DateTime::parse_from_rfc3339(ts).map(|dt| dt.with_timezone(&Utc))
                     {
                         tool_use_id_to_ts
                             .entry(tool_call_id.to_string())
@@ -449,10 +452,7 @@ pub fn parse_session(
 
     let total_tool_calls: u32 = tool_call_summaries.iter().map(|t| t.count).sum();
     let user_count = messages.iter().filter(|m| m.role == "user").count() as u32;
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .count() as u32;
+    let assistant_count = messages.iter().filter(|m| m.role == "assistant").count() as u32;
 
     files_modified.sort();
     files_modified.dedup();
@@ -559,24 +559,15 @@ fn summarize_tool_input(tool_name: &str, args: &Value) -> String {
             }
         }
         "view" => {
-            let path = args
-                .get("path")
-                .and_then(|p| p.as_str())
-                .unwrap_or("?");
+            let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("?");
             format!("View {}", path)
         }
         "edit" | "insert" | "str_replace_editor" => {
-            let path = args
-                .get("path")
-                .and_then(|p| p.as_str())
-                .unwrap_or("?");
+            let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("?");
             format!("Edit {}", path)
         }
         "web_fetch" => {
-            let url = args
-                .get("url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("?");
+            let url = args.get("url").and_then(|u| u.as_str()).unwrap_or("?");
             format!("WebFetch: {}", url)
         }
         "web_search" => {
