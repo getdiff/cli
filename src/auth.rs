@@ -29,6 +29,18 @@ pub fn config_path() -> PathBuf {
         .join("config.json")
 }
 
+/// Removes the config file to log out.
+pub fn logout() -> Result<()> {
+    let path = config_path();
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+        eprintln!("Logged out. Removed {}", path.display());
+    } else {
+        eprintln!("Not logged in.");
+    }
+    Ok(())
+}
+
 /// Reads the config file. Returns None if it doesn't exist.
 pub fn read_config() -> Option<Config> {
     let path = config_path();
@@ -215,7 +227,9 @@ async fn wait_for_callback(
     stream.flush().await?;
 
     if callback_state != expected_state {
-        bail!("State parameter mismatch. Please try logging in again.");
+        bail!(
+            "State parameter mismatch. If you have a previous login attempt open, close it and run `getdiff login` again."
+        );
     }
 
     if token.is_empty() {
