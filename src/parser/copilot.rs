@@ -78,10 +78,10 @@ pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, Pa
             continue;
         }
         let events_path = entry.path().join("events.jsonl");
-        if events_path.exists() {
-            if let Some(session_id) = entry.file_name().to_str() {
-                sessions.push((session_id.to_string(), events_path));
-            }
+        if events_path.exists()
+            && let Some(session_id) = entry.file_name().to_str()
+        {
+            sessions.push((session_id.to_string(), events_path));
         }
     }
 

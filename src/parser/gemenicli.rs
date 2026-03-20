@@ -138,12 +138,13 @@ pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, Pa
         for file_entry in std::fs::read_dir(&chats_dir)? {
             let file_entry = file_entry?;
             let path = file_entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if let Some(id) = stem.strip_prefix("session-") {
-                        sessions.push((id.to_string(), path));
-                    }
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Some(id) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|stem| stem.strip_prefix("session-"))
+            {
+                sessions.push((id.to_string(), path));
             }
         }
     }
@@ -256,18 +257,16 @@ pub fn parse_session(
                 }
 
                 // API latency
-                if let Some(ref ts) = raw_msg.timestamp {
-                    if let Ok(assistant_ts) = chrono::DateTime::parse_from_rfc3339(ts)
+                if let Some(ref ts) = raw_msg.timestamp
+                    && let Ok(assistant_ts) = chrono::DateTime::parse_from_rfc3339(ts)
                         .map(|dt| dt.with_timezone(&chrono::Utc))
-                    {
-                        if let Some(user_ts) = previous_user_timestamp {
-                            let latency_ms = (assistant_ts - user_ts).num_milliseconds();
-                            if latency_ms >= 0 {
-                                api_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
-                            }
-                            previous_user_timestamp = None;
-                        }
+                    && let Some(user_ts) = previous_user_timestamp
+                {
+                    let latency_ms = (assistant_ts - user_ts).num_milliseconds();
+                    if latency_ms >= 0 {
+                        api_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
                     }
+                    previous_user_timestamp = None;
                 }
 
                 // Detect thinking
@@ -314,19 +313,16 @@ pub fn parse_session(
                         }
 
                         // Tool latency: from message timestamp to tool completion timestamp
-                        if let (Some(msg_ts), Some(tool_ts_str)) =
-                            (&raw_msg.timestamp, &tc.timestamp)
+                        if let Some(msg_ts) = &raw_msg.timestamp
+                            && let Some(tool_ts_str) = &tc.timestamp
+                            && let Ok(start) = chrono::DateTime::parse_from_rfc3339(msg_ts)
+                                .map(|dt| dt.with_timezone(&chrono::Utc))
+                            && let Ok(end) = chrono::DateTime::parse_from_rfc3339(tool_ts_str)
+                                .map(|dt| dt.with_timezone(&chrono::Utc))
                         {
-                            if let (Ok(start), Ok(end)) = (
-                                chrono::DateTime::parse_from_rfc3339(msg_ts)
-                                    .map(|dt| dt.with_timezone(&chrono::Utc)),
-                                chrono::DateTime::parse_from_rfc3339(tool_ts_str)
-                                    .map(|dt| dt.with_timezone(&chrono::Utc)),
-                            ) {
-                                let latency_ms = (end - start).num_milliseconds();
-                                if latency_ms >= 0 {
-                                    tool_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
-                                }
+                            let latency_ms = (end - start).num_milliseconds();
+                            if latency_ms >= 0 {
+                                tool_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
                             }
                         }
 
