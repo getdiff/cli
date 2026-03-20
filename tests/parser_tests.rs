@@ -841,7 +841,7 @@ fn test_gemenicli_session_parses() {
         session["session_id"],
         "c98fc85a-d855-420a-b5a2-7d6330a7f422"
     );
-    assert_eq!(session["tool"], "gemenicli");
+    assert_eq!(session["tool"], "gemini");
     assert_eq!(session["primary_model"], "gemini-3-flash-preview");
 }
 

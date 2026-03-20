@@ -26,7 +26,7 @@ pub enum ProviderKind {
     Cursor,
     #[value(alias = "github-copilot")]
     Copilot,
-    #[value(alias = "gemini")]
+    #[value(name = "gemini", alias = "gemenicli")]
     GeminiCli,
 }
 
@@ -39,7 +39,7 @@ impl ProviderKind {
             Self::OpenClaw => "openclaw",
             Self::Cursor => "cursor",
             Self::Copilot => "copilot",
-            Self::GeminiCli => "gemenicli",
+            Self::GeminiCli => "gemini",
         }
     }
 
@@ -183,7 +183,7 @@ pub fn provider_from_tool(tool: &str) -> Option<ProviderKind> {
         "openclaw" => Some(ProviderKind::OpenClaw),
         "cursor" => Some(ProviderKind::Cursor),
         "copilot" => Some(ProviderKind::Copilot),
-        "gemenicli" => Some(ProviderKind::GeminiCli),
+        "gemini" | "gemenicli" => Some(ProviderKind::GeminiCli),
         _ => None,
     }
 }

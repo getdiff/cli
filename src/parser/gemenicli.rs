@@ -265,6 +265,7 @@ pub fn parse_session(
                             if latency_ms >= 0 {
                                 api_latencies_ms.push(latency_ms.min(u32::MAX as i64) as u32);
                             }
+                            previous_user_timestamp = None;
                         }
                     }
                 }
@@ -431,7 +432,7 @@ pub fn parse_session(
         org_id: org_id.to_string(),
         engineer_id: engineer_id.to_string(),
         machine_id: machine_id.to_string(),
-        tool: "gemenicli".to_string(),
+        tool: "gemini".to_string(),
         tool_version: "unknown".to_string(),
         diff_cli_version: env!("CARGO_PKG_VERSION").to_string(),
         project_path: String::new(),
