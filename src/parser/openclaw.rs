@@ -82,10 +82,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
     };
 
     if !root.exists() {
-        anyhow::bail!(
-            "OpenClaw agents directory not found at {}",
-            root.display()
-        );
+        anyhow::bail!("OpenClaw agents directory not found at {}", root.display());
     }
 
     let filename = format!("{}.jsonl", session_id);
@@ -105,11 +102,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
         }
     }
 
-    anyhow::bail!(
-        "Session {} not found under {}",
-        session_id,
-        root.display()
-    )
+    anyhow::bail!("Session {} not found under {}", session_id, root.display())
 }
 
 pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
@@ -136,14 +129,11 @@ pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, Pa
         for file_entry in std::fs::read_dir(&sessions_dir)? {
             let file_entry = file_entry?;
             let path = file_entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    // Skip sessions.json(l) index files
-                    if stem == "sessions" {
-                        continue;
-                    }
-                    sessions.push((stem.to_string(), path));
-                }
+            if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && stem != "sessions"
+            {
+                sessions.push((stem.to_string(), path));
             }
         }
     }
@@ -299,13 +289,19 @@ pub fn parse_session(
                             }
                         }
 
-                        if matches!(msg.stop_reason.as_deref(), Some("error") | Some("max_tokens"))
-                        {
+                        if matches!(
+                            msg.stop_reason.as_deref(),
+                            Some("error") | Some("max_tokens")
+                        ) {
                             api_error_count += 1;
                         }
 
-                        let (text, has_thinking, tool_calls_vec) =
-                            extract_assistant_content(&msg, redactor, &mut files_modified, &mut files_read);
+                        let (text, has_thinking, tool_calls_vec) = extract_assistant_content(
+                            &msg,
+                            redactor,
+                            &mut files_modified,
+                            &mut files_read,
+                        );
 
                         // Track tool call counts
                         for tc in &tool_calls_vec {
@@ -423,16 +419,15 @@ pub fn parse_session(
     // Accumulate cost from usage (OpenClaw provides cost per-message)
     // Re-parse to sum costs since we didn't track them in the main loop
     for line in content.lines() {
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if let Some(cost) = v
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && let Some(cost) = v
                 .get("message")
                 .and_then(|m| m.get("usage"))
                 .and_then(|u| u.get("cost"))
                 .and_then(|c| c.get("total"))
                 .and_then(|t| t.as_f64())
-            {
-                estimated_cost += cost;
-            }
+        {
+            estimated_cost += cost;
         }
     }
     estimated_cost = (estimated_cost * 100.0).round() / 100.0;
@@ -450,10 +445,7 @@ pub fn parse_session(
 
     let total_tool_calls: u32 = tool_call_summaries.iter().map(|t| t.count).sum();
     let user_count = messages.iter().filter(|m| m.role == "user").count() as u32;
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .count() as u32;
+    let assistant_count = messages.iter().filter(|m| m.role == "assistant").count() as u32;
 
     files_modified.sort();
     files_modified.dedup();

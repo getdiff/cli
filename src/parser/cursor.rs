@@ -38,7 +38,10 @@ struct TrackingHint {
 /// linked to this conversation.
 fn load_tracking_hints(conversation_id: &str) -> Vec<TrackingHint> {
     let db_path = match dirs::home_dir() {
-        Some(h) => h.join(".cursor").join("ai-tracking").join("ai-code-tracking.db"),
+        Some(h) => h
+            .join(".cursor")
+            .join("ai-tracking")
+            .join("ai-code-tracking.db"),
         None => return vec![],
     };
 
@@ -129,11 +132,7 @@ pub fn find_session_file(session_id: &str, root_override: Option<&Path>) -> Resu
         }
     }
 
-    anyhow::bail!(
-        "Session {} not found under {}",
-        session_id,
-        root.display()
-    )
+    anyhow::bail!("Session {} not found under {}", session_id, root.display())
 }
 
 pub fn discover_sessions(root_override: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
@@ -235,9 +234,7 @@ pub fn parse_session(
             let s = DateTime::parse_from_rfc3339(s).ok();
             let e = DateTime::parse_from_rfc3339(e).ok();
             match (s, e) {
-                (Some(s), Some(e)) => {
-                    Some(e.signed_duration_since(s).num_seconds().max(0) as u64)
-                }
+                (Some(s), Some(e)) => Some(e.signed_duration_since(s).num_seconds().max(0) as u64),
                 _ => None,
             }
         }
@@ -310,10 +307,7 @@ pub fn parse_session(
     }
 
     let user_count = messages.iter().filter(|m| m.role == "user").count() as u32;
-    let assistant_count = messages
-        .iter()
-        .filter(|m| m.role == "assistant")
-        .count() as u32;
+    let assistant_count = messages.iter().filter(|m| m.role == "assistant").count() as u32;
 
     files_modified.sort();
     files_modified.dedup();

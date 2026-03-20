@@ -1,6 +1,8 @@
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod cursor;
+pub mod gemenicli;
 pub mod openclaw;
 pub mod opencode;
 
@@ -22,6 +24,10 @@ pub enum ProviderKind {
     #[value(alias = "open-claw")]
     OpenClaw,
     Cursor,
+    #[value(alias = "github-copilot")]
+    Copilot,
+    #[value(name = "gemini", alias = "gemenicli")]
+    GeminiCli,
 }
 
 impl ProviderKind {
@@ -32,6 +38,8 @@ impl ProviderKind {
             Self::OpenCode => "opencode",
             Self::OpenClaw => "openclaw",
             Self::Cursor => "cursor",
+            Self::Copilot => "copilot",
+            Self::GeminiCli => "gemini",
         }
     }
 
@@ -53,6 +61,8 @@ impl ProviderKind {
             Self::OpenCode => opencode::discover_sessions(root_override).map(map_locators),
             Self::OpenClaw => openclaw::discover_sessions(root_override).map(map_locators),
             Self::Cursor => cursor::discover_sessions(root_override).map(map_locators),
+            Self::Copilot => copilot::discover_sessions(root_override).map(map_locators),
+            Self::GeminiCli => gemenicli::discover_sessions(root_override).map(map_locators),
         }
     }
 
@@ -67,6 +77,8 @@ impl ProviderKind {
             Self::OpenCode => opencode::find_session_file(session_id, root_override)?,
             Self::OpenClaw => openclaw::find_session_file(session_id, root_override)?,
             Self::Cursor => cursor::find_session_file(session_id, root_override)?,
+            Self::Copilot => copilot::find_session_file(session_id, root_override)?,
+            Self::GeminiCli => gemenicli::find_session_file(session_id, root_override)?,
         };
 
         Ok(SessionLocator {
@@ -95,8 +107,12 @@ impl ProviderKind {
             Self::OpenClaw => {
                 openclaw::parse_session(path, org_id, engineer_id, machine_id, redactor)
             }
-            Self::Cursor => {
-                cursor::parse_session(path, org_id, engineer_id, machine_id, redactor)
+            Self::Cursor => cursor::parse_session(path, org_id, engineer_id, machine_id, redactor),
+            Self::Copilot => {
+                copilot::parse_session(path, org_id, engineer_id, machine_id, redactor)
+            }
+            Self::GeminiCli => {
+                gemenicli::parse_session(path, org_id, engineer_id, machine_id, redactor)
             }
         }
     }
@@ -133,6 +149,8 @@ impl ProviderKind {
             Self::OpenCode => Ok(None),
             Self::OpenClaw => Ok(None),
             Self::Cursor => Ok(None),
+            Self::Copilot => Ok(None),
+            Self::GeminiCli => Ok(None),
         }
     }
 }
@@ -164,6 +182,8 @@ pub fn provider_from_tool(tool: &str) -> Option<ProviderKind> {
         "opencode" => Some(ProviderKind::OpenCode),
         "openclaw" => Some(ProviderKind::OpenClaw),
         "cursor" => Some(ProviderKind::Cursor),
+        "copilot" => Some(ProviderKind::Copilot),
+        "gemini" | "gemenicli" => Some(ProviderKind::GeminiCli),
         _ => None,
     }
 }
@@ -192,6 +212,8 @@ mod tests {
             ProviderKind::OpenCode,
             ProviderKind::OpenClaw,
             ProviderKind::Cursor,
+            ProviderKind::Copilot,
+            ProviderKind::GeminiCli,
         ] {
             assert_eq!(super::provider_from_tool(provider.as_str()), Some(provider));
         }
