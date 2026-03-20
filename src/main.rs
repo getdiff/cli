@@ -86,6 +86,9 @@ enum Commands {
         token: Option<String>,
     },
 
+    /// Log out and remove stored credentials
+    Logout,
+
     /// Show current login status
     Status,
 
@@ -252,6 +255,9 @@ async fn main() -> Result<()> {
             } else {
                 auth::login(&server).await?;
             }
+        }
+        Commands::Logout => {
+            auth::logout()?;
         }
         Commands::Status => match auth::read_config() {
             Some(config) => {
