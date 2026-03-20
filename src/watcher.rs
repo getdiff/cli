@@ -256,6 +256,8 @@ impl WatchConfig {
             ProviderKind::OpenCode => parser::opencode::default_data_dir(),
             ProviderKind::OpenClaw => parser::openclaw::default_sessions_dir(),
             ProviderKind::Cursor => parser::cursor::default_projects_dir(),
+            ProviderKind::Copilot => parser::copilot::default_session_state_dir(),
+            ProviderKind::GeminiCli => parser::gemenicli::default_sessions_dir(),
         }
     }
 

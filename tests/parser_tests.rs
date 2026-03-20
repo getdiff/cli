@@ -722,3 +722,174 @@ fn test_cursor_no_tool_calls() {
     // Cursor doesn't log tool calls in transcripts
     assert_eq!(session["total_tool_calls"].as_u64(), Some(0));
 }
+
+// -----------------------------------------------------------------------
+// Copilot tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_copilot_session_parses() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    assert_eq!(
+        session["session_id"],
+        "5a2d4e02-22d3-4097-ac60-94abc4814998"
+    );
+    assert_eq!(session["tool"], "copilot");
+    assert_eq!(session["tool_version"], "1.0.9");
+    assert_eq!(session["project_path"], "/Users/testuser/project");
+    assert_eq!(session["primary_model"], "gpt-5-mini");
+}
+
+#[test]
+fn test_copilot_message_counts() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    // 2 real user messages + tool results (counted as user role)
+    assert!(session["user_message_count"].as_u64().unwrap() >= 2);
+    assert!(session["assistant_message_count"].as_u64().unwrap() >= 4);
+    assert!(session["message_count"].as_u64().unwrap() > 4);
+}
+
+#[test]
+fn test_copilot_tool_calls() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    // Should have web_fetch, view, bash tool calls (report_intent filtered)
+    assert!(session["total_tool_calls"].as_u64().unwrap() > 0);
+
+    let tool_names: Vec<&str> = session["tool_calls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["tool_name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !tool_names.contains(&"report_intent"),
+        "report_intent should be filtered out"
+    );
+    assert!(tool_names.contains(&"web_fetch") || tool_names.contains(&"view") || tool_names.contains(&"bash"));
+}
+
+#[test]
+fn test_copilot_timestamps() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    assert!(session["started_at"].as_str().is_some());
+    assert!(session["ended_at"].as_str().is_some());
+    assert!(session["duration_seconds"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_copilot_thinking_detected() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+    let messages = session["messages"].as_array().unwrap();
+
+    let assistant_with_thinking = messages
+        .iter()
+        .find(|m| m["role"] == "assistant" && m["has_thinking"] == true);
+    assert!(
+        assistant_with_thinking.is_some(),
+        "Should detect reasoning/thinking in assistant messages"
+    );
+}
+
+#[test]
+fn test_copilot_reliability_telemetry() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    let telemetry = &session["reliability_telemetry"];
+    assert!(telemetry["tool_success_count"].as_u64().unwrap() > 0);
+    assert!(telemetry["avg_tool_latency_ms"].as_u64().is_some());
+}
+
+#[test]
+fn test_copilot_files_tracked() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    let read = session["files_read"].as_array().unwrap();
+    assert!(
+        read.iter().any(|p| {
+            let s = p.as_str().unwrap();
+            s.contains("README.md") || s.contains("testuser")
+        }),
+        "Should track viewed files"
+    );
+}
+
+#[test]
+fn test_copilot_tool_errors_tracked() {
+    let session = parse_fixture_with_provider("copilot-session.jsonl", Some("copilot"));
+
+    let telemetry = &session["reliability_telemetry"];
+    // The fixture has one failed view (file too large)
+    assert!(telemetry["tool_error_count"].as_u64().unwrap() >= 1);
+}
+
+// -----------------------------------------------------------------------
+// Gemini CLI tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_gemenicli_session_parses() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    assert_eq!(session["session_id"], "c98fc85a-d855-420a-b5a2-7d6330a7f422");
+    assert_eq!(session["tool"], "gemenicli");
+    assert_eq!(session["primary_model"], "gemini-3-flash-preview");
+}
+
+#[test]
+fn test_gemenicli_message_counts() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    assert_eq!(session["user_message_count"].as_u64(), Some(2));
+    assert_eq!(session["assistant_message_count"].as_u64(), Some(6));
+}
+
+#[test]
+fn test_gemenicli_tool_calls() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    assert!(session["total_tool_calls"].as_u64().unwrap() >= 5);
+    let tool_names: Vec<&str> = session["tool_calls"].as_array().unwrap().iter()
+        .map(|t| t["tool_name"].as_str().unwrap()).collect();
+    assert!(tool_names.contains(&"google_web_search") || tool_names.contains(&"grep_search"));
+}
+
+#[test]
+fn test_gemenicli_tokens() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    assert!(session["total_input_tokens"].as_u64().unwrap() > 0);
+    assert!(session["total_output_tokens"].as_u64().unwrap() > 0);
+    assert!(session["total_cache_read_tokens"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_gemenicli_thinking_detected() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    let messages = session["messages"].as_array().unwrap();
+    let has_thinking = messages.iter().any(|m| m["has_thinking"] == true);
+    assert!(has_thinking, "Should detect thinking in gemini messages");
+}
+
+#[test]
+fn test_gemenicli_timestamps() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    assert!(session["started_at"].as_str().is_some());
+    assert!(session["ended_at"].as_str().is_some());
+    assert!(session["duration_seconds"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn test_gemenicli_files_tracked() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    let read = session["files_read"].as_array().unwrap();
+    let modified = session["files_modified"].as_array().unwrap();
+    assert!(read.iter().any(|p| p.as_str().unwrap().contains("README.md")));
+    assert!(modified.iter().any(|p| p.as_str().unwrap().contains("README.md")));
+}
+
+#[test]
+fn test_gemenicli_reliability() {
+    let session = parse_fixture_with_provider("gemenicli-session.json", Some("gemini"));
+    let telemetry = &session["reliability_telemetry"];
+    assert!(telemetry["tool_success_count"].as_u64().unwrap() >= 5);
+}
