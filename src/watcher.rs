@@ -296,7 +296,10 @@ pub async fn run_watch_loop(config: WatchConfig) -> Result<()> {
     }
 
     // Initial artifact sync
-    if let Err(e) = crate::artifact_sync::run_sync_cycle(&config.server, &config.api_key, &config.diff_dir).await {
+    if let Err(e) =
+        crate::artifact_sync::run_sync_cycle(&config.server, &config.api_key, &config.diff_dir)
+            .await
+    {
         eprintln!("Artifact sync error: {}", e);
     }
 
@@ -321,7 +324,12 @@ pub async fn run_watch_loop(config: WatchConfig) -> Result<()> {
         }
 
         if cycle.is_multiple_of(ARTIFACT_SYNC_INTERVAL)
-            && let Err(e) = crate::artifact_sync::run_sync_cycle(&config.server, &config.api_key, &config.diff_dir).await
+            && let Err(e) = crate::artifact_sync::run_sync_cycle(
+                &config.server,
+                &config.api_key,
+                &config.diff_dir,
+            )
+            .await
         {
             eprintln!("Artifact sync error: {}", e);
         }

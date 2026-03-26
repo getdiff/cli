@@ -270,8 +270,13 @@ async fn main() -> Result<()> {
                 server,
             } => {
                 let api_key = get_api_key()?;
-                artifact_sync::list_artifacts(&server, &api_key, query.as_deref(), r#type.as_deref())
-                    .await?;
+                artifact_sync::list_artifacts(
+                    &server,
+                    &api_key,
+                    query.as_deref(),
+                    r#type.as_deref(),
+                )
+                .await?;
             }
             ArtifactCommands::Install {
                 artifact_id,
@@ -304,7 +309,6 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
 
 async fn upload_session(server: &str, api_key: &str, session: &types::DiffSession) -> Result<()> {
     let url = format!("{}/api/v1/sessions", server.trim_end_matches('/'));

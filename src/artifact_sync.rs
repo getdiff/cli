@@ -71,11 +71,7 @@ fn write_hash_cache(diff_dir: &Path, cache: &HashCache) -> Result<()> {
 
     // Write to temp file then rename for atomicity
     let cache_path = diff_dir.join(HASH_CACHE_FILE);
-    let temp_path = diff_dir.join(format!(
-        ".{}.tmp-{}",
-        HASH_CACHE_FILE,
-        uuid::Uuid::new_v4()
-    ));
+    let temp_path = diff_dir.join(format!(".{}.tmp-{}", HASH_CACHE_FILE, uuid::Uuid::new_v4()));
     let contents = serde_json::to_string_pretty(&merged)?;
     {
         let mut f = std::fs::File::create(&temp_path)?;
@@ -190,9 +186,14 @@ pub async fn run_sync_cycle(server: &str, api_key: &str, diff_dir: &Path) -> Res
                     match install_pending_artifact(item) {
                         Ok(local_hash) => {
                             eprintln!("    Installed: {} (v{})", item.name, item.version);
-                            if let Err(e) =
-                                confirm_install(&client, server, api_key, &item.artifact_id, &local_hash)
-                                    .await
+                            if let Err(e) = confirm_install(
+                                &client,
+                                server,
+                                api_key,
+                                &item.artifact_id,
+                                &local_hash,
+                            )
+                            .await
                             {
                                 eprintln!("    Confirm error for {}: {}", item.name, e);
                             }
@@ -315,10 +316,7 @@ async fn poll_pending(
     server: &str,
     api_key: &str,
 ) -> Result<Vec<PendingItem>> {
-    let url = format!(
-        "{}/api/v1/artifacts/pending",
-        server.trim_end_matches('/')
-    );
+    let url = format!("{}/api/v1/artifacts/pending", server.trim_end_matches('/'));
 
     let response = client
         .get(&url)
@@ -346,7 +344,11 @@ async fn poll_pending(
 // ---------------------------------------------------------------------------
 
 fn install_pending_artifact(item: &PendingItem) -> Result<String> {
-    let target_path = resolve_install_path(&item.target_provider, &item.origin_path, &item.artifact_type)?;
+    let target_path = resolve_install_path(
+        &item.target_provider,
+        &item.origin_path,
+        &item.artifact_type,
+    )?;
 
     // Ensure parent directory exists
     if let Some(parent) = target_path.parent() {
@@ -367,7 +369,8 @@ fn resolve_install_path(
     origin_path: &str,
     artifact_type: &str,
 ) -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
 
     // If origin_path is absolute, use it directly
     if Path::new(origin_path).is_absolute() {
@@ -603,14 +606,8 @@ pub async fn install_artifact(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let artifact_type = artifact["type"]
-        .as_str()
-        .unwrap_or("agent")
-        .to_string();
-    let name = artifact["name"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
+    let artifact_type = artifact["type"].as_str().unwrap_or("agent").to_string();
+    let name = artifact["name"].as_str().unwrap_or("unknown").to_string();
 
     let pending_item = PendingItem {
         _installation_id: String::new(),
@@ -765,7 +762,10 @@ mod tests {
         write_hash_cache(diff_dir, &cache).unwrap();
         let loaded = read_hash_cache(diff_dir);
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded["claude:agents/review.md"].content_hash, "sha256-abc123");
+        assert_eq!(
+            loaded["claude:agents/review.md"].content_hash,
+            "sha256-abc123"
+        );
     }
 
     #[test]
@@ -842,7 +842,8 @@ mod tests {
 
     #[test]
     fn test_resolve_copilot_agent_path() {
-        let path = resolve_install_path("copilot", ".github/agents/review.agent.md", "agent").unwrap();
+        let path =
+            resolve_install_path("copilot", ".github/agents/review.agent.md", "agent").unwrap();
         assert_eq!(path, PathBuf::from(".github/agents/review.agent.md"));
     }
 
@@ -879,14 +880,16 @@ mod tests {
     #[test]
     fn test_resolve_amazonq_rules_not_remapped() {
         // .amazonq/rules/security.md should stay as-is
-        let path = resolve_install_path("amazonq", ".amazonq/rules/security.md", "system_prompt").unwrap();
+        let path =
+            resolve_install_path("amazonq", ".amazonq/rules/security.md", "system_prompt").unwrap();
         assert_eq!(path, PathBuf::from(".amazonq/rules/security.md"));
     }
 
     #[test]
     fn test_resolve_cursor_rules_in_subdir_not_remapped() {
         // .cursor/rules/my-rule.mdc should stay as-is
-        let path = resolve_install_path("cursor", ".cursor/rules/my-rule.mdc", "system_prompt").unwrap();
+        let path =
+            resolve_install_path("cursor", ".cursor/rules/my-rule.mdc", "system_prompt").unwrap();
         assert_eq!(path, PathBuf::from(".cursor/rules/my-rule.mdc"));
     }
 

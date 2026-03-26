@@ -147,7 +147,7 @@ fn scan_provider_global(provider: ArtifactProvider) -> Result<Vec<ScannedArtifac
         ArtifactProvider::Copilot => Ok(Vec::new()), // All copilot artifacts are project-relative
         ArtifactProvider::Windsurf => scan_windsurf_global(),
         ArtifactProvider::Amazonq => Ok(Vec::new()), // All amazonq artifacts are project-relative
-        ArtifactProvider::Aider => Ok(Vec::new()),    // All aider artifacts are project-relative
+        ArtifactProvider::Aider => Ok(Vec::new()),   // All aider artifacts are project-relative
     }
 }
 
@@ -756,7 +756,10 @@ pub fn redact_credentials(value: &serde_json::Value) -> serde_json::Value {
                     // Only redact string values (not nested objects that happen to have "token" in key)
                     match val {
                         serde_json::Value::String(_) => {
-                            out.insert(key.clone(), serde_json::Value::String("<redacted>".to_string()));
+                            out.insert(
+                                key.clone(),
+                                serde_json::Value::String("<redacted>".to_string()),
+                            );
                         }
                         _ => {
                             out.insert(key.clone(), redact_credentials(val));
@@ -811,7 +814,10 @@ mod tests {
         assert_eq!(redacted["config"]["token"], "<redacted>");
         assert_eq!(redacted["config"]["host"], "localhost");
         assert_eq!(redacted["config"]["PASSWORD"], "<redacted>");
-        assert_eq!(redacted["config"]["nested"]["connectionString"], "<redacted>");
+        assert_eq!(
+            redacted["config"]["nested"]["connectionString"],
+            "<redacted>"
+        );
         assert_eq!(redacted["items"][0]["api_key"], "<redacted>");
         assert_eq!(redacted["items"][0]["label"], "test");
     }
@@ -889,10 +895,16 @@ mod tests {
         scan_claude_settings(tmp.path(), &mut artifacts);
 
         assert_eq!(artifacts.len(), 2);
-        let hook = artifacts.iter().find(|a| a.artifact_type == ArtifactType::Hook).unwrap();
+        let hook = artifacts
+            .iter()
+            .find(|a| a.artifact_type == ArtifactType::Hook)
+            .unwrap();
         assert!(hook.raw_content.contains("PostToolUse"));
 
-        let mcp = artifacts.iter().find(|a| a.artifact_type == ArtifactType::Mcp).unwrap();
+        let mcp = artifacts
+            .iter()
+            .find(|a| a.artifact_type == ArtifactType::Mcp)
+            .unwrap();
         assert!(mcp.raw_content.contains("<redacted>"));
         assert!(!mcp.raw_content.contains("secret"));
     }
