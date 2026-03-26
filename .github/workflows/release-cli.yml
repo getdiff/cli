@@ -4,9 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.8)"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -26,6 +34,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
@@ -68,15 +78,15 @@ jobs:
 
       - name: Create GitHub release
         run: |
-          gh release create "${GITHUB_REF_NAME}" artifacts/*.tar.gz \
-            --title "getdiff ${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" artifacts/*.tar.gz \
+            --title "getdiff ${RELEASE_TAG}" \
             --generate-notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update formula with SHA256 hashes
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
+          VERSION=${RELEASE_TAG#v}
           python3 - homebrew/getdiff.rb "$VERSION" artifacts getdiff/cli <<'PYEOF'
           import hashlib, re, sys
 
@@ -135,7 +145,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/getdiff.rb
-          git diff --staged --quiet || git commit -m "Update getdiff to v${GITHUB_REF_NAME#v}"
+          git diff --staged --quiet || git commit -m "Update getdiff to v${RELEASE_TAG#v}"
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.TAP_TOKEN }}
