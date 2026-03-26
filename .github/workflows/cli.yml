@@ -37,14 +37,19 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag if it does not exist
+      - name: Create tag and trigger release
         run: |
-          if gh api repos/${{ github.repository }}/git/refs/tags/${{ steps.version.outputs.tag }} >/dev/null 2>&1; then
-            echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping"
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh api repos/${{ github.repository }}/git/refs/tags/${TAG} >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists, skipping"
           else
-            git tag ${{ steps.version.outputs.tag }}
-            git push origin ${{ steps.version.outputs.tag }}
-            echo "Created tag ${{ steps.version.outputs.tag }}"
+            git tag ${TAG}
+            git push origin ${TAG}
+            echo "Created tag ${TAG}"
+            # Tags pushed by Actions don't trigger other workflows,
+            # so explicitly dispatch the release workflow
+            gh workflow run release-cli.yml -f tag=${TAG}
+            echo "Dispatched release workflow for ${TAG}"
           fi
         env:
           GH_TOKEN: ${{ secrets.TAP_TOKEN }}
