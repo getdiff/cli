@@ -392,6 +392,7 @@ dependencies = [
  "dirs",
  "gethostname",
  "glob",
+ "libc",
  "notify",
  "once_cell",
  "open",
