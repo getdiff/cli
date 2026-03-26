@@ -236,8 +236,7 @@ fn session_needs_upload(
 
 /// Configuration for the watch daemon.
 pub struct WatchConfig {
-    pub provider: ProviderKind,
-    pub source_root: PathBuf,
+    pub providers: Vec<ProviderKind>,
     pub diff_dir: PathBuf,
     pub server: String,
     pub api_key: String,
@@ -271,10 +270,10 @@ impl WatchConfig {
 
 /// Runs the watch loop. This function runs forever (until killed).
 pub async fn run_watch_loop(config: WatchConfig) -> Result<()> {
+    let provider_names: Vec<&str> = config.providers.iter().map(|p| p.as_str()).collect();
     eprintln!(
-        "Diff daemon starting. Watching {} at: {}",
-        config.provider,
-        config.source_root.display()
+        "Diff daemon starting. Watching providers: {}",
+        provider_names.join(", ")
     );
     eprintln!("  Server: {}", config.server);
     eprintln!("  Idle threshold: {}s", config.idle_threshold.as_secs());
@@ -296,10 +295,25 @@ pub async fn run_watch_loop(config: WatchConfig) -> Result<()> {
         eprintln!("No sessions to upload.");
     }
 
+    // Initial artifact sync
+    if let Err(e) =
+        crate::artifact_sync::run_sync_cycle(&config.server, &config.api_key, &config.diff_dir)
+            .await
+    {
+        eprintln!("Artifact sync error: {}", e);
+    }
+
     // Main watch loop
+    // Artifact sync runs every ARTIFACT_SYNC_INTERVAL cycles (~2.5 min at 30s scan)
+    // since config files change infrequently compared to sessions.
+    const ARTIFACT_SYNC_INTERVAL: u64 = 5;
+    let mut cycle: u64 = 0;
+
     eprintln!("\nWatching for new and updated sessions...");
     loop {
         tokio::time::sleep(config.scan_interval).await;
+        cycle += 1;
+
         let count = process_changed_sessions(&config, &client, &mut state).await?;
         if count > 0 {
             eprintln!(
@@ -307,6 +321,17 @@ pub async fn run_watch_loop(config: WatchConfig) -> Result<()> {
                 chrono::Local::now().format("%H:%M:%S"),
                 count
             );
+        }
+
+        if cycle.is_multiple_of(ARTIFACT_SYNC_INTERVAL)
+            && let Err(e) = crate::artifact_sync::run_sync_cycle(
+                &config.server,
+                &config.api_key,
+                &config.diff_dir,
+            )
+            .await
+        {
+            eprintln!("Artifact sync error: {}", e);
         }
     }
 }
@@ -319,12 +344,21 @@ async fn process_changed_sessions(
 ) -> Result<usize> {
     let (redactor, detector_version) =
         crate::detectors::load_redactor(&config.server, &config.api_key).await?;
-    let changed = find_changed_sessions(
-        config.provider,
-        &config.source_root,
-        state,
-        config.idle_threshold,
-    )?;
+
+    let mut changed = Vec::new();
+    for &provider in &config.providers {
+        let source_root = match WatchConfig::default_source_root(provider) {
+            Ok(root) => root,
+            Err(_) => continue, // Provider dir doesn't exist, skip
+        };
+        match find_changed_sessions(provider, &source_root, state, config.idle_threshold) {
+            Ok(sessions) => changed.extend(sessions),
+            Err(e) => {
+                eprintln!("  Error scanning {}: {}", provider, e);
+                continue;
+            }
+        }
+    }
 
     let mut count = 0;
     for locator in &changed {

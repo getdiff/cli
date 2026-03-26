@@ -30,6 +30,52 @@ pub enum ProviderKind {
     GeminiCli,
 }
 
+/// All concrete provider variants (no `All` meta-variant).
+pub const ALL_PROVIDERS: &[ProviderKind] = &[
+    ProviderKind::ClaudeCode,
+    ProviderKind::Codex,
+    ProviderKind::OpenCode,
+    ProviderKind::OpenClaw,
+    ProviderKind::Cursor,
+    ProviderKind::Copilot,
+    ProviderKind::GeminiCli,
+];
+
+/// CLI-level provider selection that includes an "all" option.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ProviderSelection {
+    /// Watch all providers
+    All,
+    #[value(alias = "claude")]
+    ClaudeCode,
+    Codex,
+    #[value(alias = "open-code", alias = "opencode")]
+    OpenCode,
+    #[value(alias = "open-claw")]
+    OpenClaw,
+    Cursor,
+    #[value(alias = "github-copilot")]
+    Copilot,
+    #[value(name = "gemini", alias = "gemenicli")]
+    GeminiCli,
+}
+
+impl ProviderSelection {
+    /// Returns the list of concrete providers this selection represents.
+    pub fn providers(self) -> &'static [ProviderKind] {
+        match self {
+            Self::All => ALL_PROVIDERS,
+            Self::ClaudeCode => &[ProviderKind::ClaudeCode],
+            Self::Codex => &[ProviderKind::Codex],
+            Self::OpenCode => &[ProviderKind::OpenCode],
+            Self::OpenClaw => &[ProviderKind::OpenClaw],
+            Self::Cursor => &[ProviderKind::Cursor],
+            Self::Copilot => &[ProviderKind::Copilot],
+            Self::GeminiCli => &[ProviderKind::GeminiCli],
+        }
+    }
+}
+
 impl ProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {

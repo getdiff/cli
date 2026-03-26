@@ -1,3 +1,5 @@
+mod artifact_scanner;
+mod artifact_sync;
 mod auth;
 mod config_history;
 mod config_snapshot;
@@ -58,9 +60,9 @@ enum Commands {
 
     /// Watch for completed sessions and upload them automatically
     Watch {
-        /// Session provider
-        #[arg(long, value_enum, default_value_t = parser::ProviderKind::ClaudeCode)]
-        provider: parser::ProviderKind,
+        /// Session provider(s) to watch (default: all)
+        #[arg(long, value_enum, default_value_t = parser::ProviderSelection::All)]
+        provider: parser::ProviderSelection,
 
         /// Diff server URL
         #[arg(long, env = "DIFF_SERVER", default_value_t = default_server())]
@@ -92,83 +94,70 @@ enum Commands {
     /// Show current login status
     Status,
 
-    /// Publish a configuration artifact to the registry
-    Publish {
-        /// Artifact type (agent, hook, mcp, plugin, prompt)
-        #[arg(long)]
-        r#type: String,
-
-        /// Human-readable artifact name
-        #[arg(long)]
-        name: String,
-
-        /// Path to UCIR JSON file
-        #[arg(long)]
-        path: String,
-
-        /// Optional description
-        #[arg(long)]
-        description: Option<String>,
-
-        /// Visibility scope
-        #[arg(long, default_value = "org")]
-        visibility: String,
-
-        /// Project key (required when visibility=project)
-        #[arg(long)]
-        project_key: Option<String>,
-
-        /// Origin provider
-        #[arg(long)]
-        provider: Option<String>,
-
+    /// Run artifact sync manually (scan, upload, install pending)
+    Sync {
         /// Diff server URL
-        #[arg(long, env = "DIFF_SERVER")]
+        #[arg(long, env = "DIFF_SERVER", default_value_t = default_server())]
         server: String,
     },
 
-    /// Browse and install registry artifacts
-    Registry {
+    /// Artifact registry commands
+    Artifacts {
         #[command(subcommand)]
-        command: RegistryCommands,
+        command: ArtifactCommands,
     },
 }
 
 #[derive(Subcommand)]
-enum RegistryCommands {
-    /// Search artifacts in registry
-    Search {
+enum ArtifactCommands {
+    /// List artifacts visible to you
+    List {
+        /// Search query
         #[arg(long)]
         query: Option<String>,
 
+        /// Filter by type (agent, system_prompt, mcp, memory, hook)
         #[arg(long)]
         r#type: Option<String>,
 
-        #[arg(long, env = "DIFF_SERVER")]
+        /// Diff server URL
+        #[arg(long, env = "DIFF_SERVER", default_value_t = default_server())]
         server: String,
     },
 
-    /// Install artifact by id
+    /// Install an artifact by ID (one-time, no auto-updates)
     Install {
-        #[arg(long)]
+        /// Artifact ID
         artifact_id: String,
 
+        /// Target provider to install for
         #[arg(long, default_value = "claude")]
         target_provider: String,
 
-        #[arg(long, env = "DIFF_SERVER")]
+        /// Subscribe for auto-updates instead of one-time install
+        #[arg(long, default_value_t = false)]
+        subscribe: bool,
+
+        /// Diff server URL
+        #[arg(long, env = "DIFF_SERVER", default_value_t = default_server())]
         server: String,
     },
 
-    /// Translate an artifact between providers and show fidelity report
-    Translate {
-        #[arg(long)]
+    /// Share an artifact with your org or specific users
+    Share {
+        /// Artifact ID
         artifact_id: String,
 
-        #[arg(long)]
-        target_provider: String,
+        /// Share with the entire org
+        #[arg(long, default_value_t = false)]
+        org_wide: bool,
 
-        #[arg(long, env = "DIFF_SERVER")]
+        /// Share with specific user IDs (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        user_ids: Option<Vec<String>>,
+
+        /// Diff server URL
+        #[arg(long, env = "DIFF_SERVER", default_value_t = default_server())]
         server: String,
     },
 }
@@ -235,9 +224,9 @@ async fn main() -> Result<()> {
             scan_seconds,
         } => {
             let api_key = get_api_key()?;
+            let providers = provider.providers().to_vec();
             let config = watcher::WatchConfig {
-                provider,
-                source_root: watcher::WatchConfig::default_source_root(provider)?,
+                providers: providers.clone(),
                 diff_dir: watcher::WatchConfig::default_diff_dir(),
                 server,
                 api_key,
@@ -269,289 +258,55 @@ async fn main() -> Result<()> {
                 eprintln!("Not logged in. Run `getdiff login` to authenticate.");
             }
         },
-        Commands::Publish {
-            r#type,
-            name,
-            path,
-            description,
-            visibility,
-            project_key,
-            provider,
-            server,
-        } => {
-            ensure_publish_visibility_project_key(&visibility, project_key.as_deref())?;
-            let api_key = get_required_diff_api_key()?;
-            let opts = PublishArtifactOptions {
-                server,
-                api_key,
-                artifact_type: r#type,
-                name,
-                path,
-                description,
-                visibility,
-                project_key,
-                provider,
-            };
-            publish_artifact(&opts).await?;
+        Commands::Sync { server } => {
+            let api_key = get_api_key()?;
+            let diff_dir = default_diff_dir();
+            artifact_sync::run_sync_cycle(&server, &api_key, &diff_dir).await?;
         }
-        Commands::Registry { command } => match command {
-            RegistryCommands::Search {
+        Commands::Artifacts { command } => match command {
+            ArtifactCommands::List {
                 query,
                 r#type,
                 server,
             } => {
-                let api_key = get_required_diff_api_key()?;
-                registry_search(&server, &api_key, query.as_deref(), r#type.as_deref()).await?;
+                let api_key = get_api_key()?;
+                artifact_sync::list_artifacts(
+                    &server,
+                    &api_key,
+                    query.as_deref(),
+                    r#type.as_deref(),
+                )
+                .await?;
             }
-            RegistryCommands::Install {
+            ArtifactCommands::Install {
                 artifact_id,
                 target_provider,
+                subscribe,
                 server,
             } => {
-                let api_key = get_required_diff_api_key()?;
-                registry_install(&server, &api_key, &artifact_id, &target_provider).await?;
+                let api_key = get_api_key()?;
+                artifact_sync::install_artifact(
+                    &server,
+                    &api_key,
+                    &artifact_id,
+                    &target_provider,
+                    subscribe,
+                )
+                .await?;
             }
-            RegistryCommands::Translate {
+            ArtifactCommands::Share {
                 artifact_id,
-                target_provider,
+                org_wide,
+                user_ids,
                 server,
             } => {
-                let api_key = get_required_diff_api_key()?;
-                registry_translate(&server, &api_key, &artifact_id, &target_provider).await?;
+                let api_key = get_api_key()?;
+                artifact_sync::share_artifact(&server, &api_key, &artifact_id, org_wide, user_ids)
+                    .await?;
             }
         },
     }
 
-    Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct PublishArtifactOptions {
-    server: String,
-    api_key: String,
-    artifact_type: String,
-    name: String,
-    path: String,
-    description: Option<String>,
-    visibility: String,
-    project_key: Option<String>,
-    provider: Option<String>,
-}
-
-async fn publish_artifact(opts: &PublishArtifactOptions) -> Result<()> {
-    ensure_publish_visibility_project_key(&opts.visibility, opts.project_key.as_deref())?;
-
-    let ucir_path = std::path::Path::new(&opts.path);
-    let content = std::fs::read_to_string(ucir_path)?;
-    let ucir: serde_json::Value = serde_json::from_str(&content)?;
-    let redactor = redact::Redactor::new();
-    let sanitized_ucir = sanitize_ucir_for_publish(ucir, &redactor)?;
-
-    let url = format!(
-        "{}/api/v1/config/artifacts",
-        opts.server.trim_end_matches('/')
-    );
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", opts.api_key))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "type": opts.artifact_type.as_str(),
-            "name": opts.name.as_str(),
-            "description": opts.description.as_deref(),
-            "origin_provider": opts.provider.as_deref(),
-            "visibility": opts.visibility.as_str(),
-            "project_key": opts.project_key.as_deref(),
-            "ucir": sanitized_ucir,
-        }))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("Publish failed (HTTP {}): {}", status, body);
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    eprintln!(
-        "Published artifact {} ({})",
-        body["id"].as_str().unwrap_or("unknown"),
-        body["status"].as_str().unwrap_or("ok")
-    );
-    Ok(())
-}
-
-fn sanitize_ucir_for_publish(
-    ucir: serde_json::Value,
-    redactor: &redact::Redactor,
-) -> Result<serde_json::Value> {
-    let raw = serde_json::to_string(&ucir)?;
-    let redacted = redactor.redact(&raw);
-    Ok(serde_json::from_str(&redacted)?)
-}
-
-fn ensure_publish_visibility_project_key(
-    visibility: &str,
-    project_key: Option<&str>,
-) -> Result<()> {
-    if visibility == "project"
-        && project_key
-            .map(str::trim)
-            .map(str::is_empty)
-            .unwrap_or(true)
-    {
-        bail!("--project-key is required when --visibility=project");
-    }
-    Ok(())
-}
-
-async fn registry_search(
-    server: &str,
-    api_key: &str,
-    query: Option<&str>,
-    artifact_type: Option<&str>,
-) -> Result<()> {
-    let mut url = format!("{}/api/v1/config/artifacts", server.trim_end_matches('/'));
-    let mut first = true;
-    if let Some(query) = query {
-        url.push(if first { '?' } else { '&' });
-        first = false;
-        url.push_str(&format!("q={}", urlencoding::encode(query)));
-    }
-    if let Some(artifact_type) = artifact_type {
-        url.push(if first { '?' } else { '&' });
-        url.push_str(&format!("type={}", urlencoding::encode(artifact_type)));
-    }
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let response = client
-        .get(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("Search failed (HTTP {}): {}", status, body);
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    let artifacts = body["artifacts"].as_array().cloned().unwrap_or_default();
-    if artifacts.is_empty() {
-        println!("No artifacts found");
-        return Ok(());
-    }
-
-    for artifact in artifacts {
-        println!(
-            "{}\t{}\t{}\tv{}",
-            artifact["id"].as_str().unwrap_or("?"),
-            artifact["type"].as_str().unwrap_or("?"),
-            artifact["name"].as_str().unwrap_or("?"),
-            artifact["version"].as_i64().unwrap_or(1),
-        );
-    }
-    Ok(())
-}
-
-async fn registry_install(
-    server: &str,
-    api_key: &str,
-    artifact_id: &str,
-    target_provider: &str,
-) -> Result<()> {
-    let url = format!(
-        "{}/api/v1/config/artifacts/{}/install",
-        server.trim_end_matches('/'),
-        artifact_id
-    );
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "target_provider": target_provider,
-        }))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("Install failed (HTTP {}): {}", status, body);
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    eprintln!(
-        "Installed artifact {} ({})",
-        body["id"].as_str().unwrap_or("unknown"),
-        body["status"].as_str().unwrap_or("ok")
-    );
-    Ok(())
-}
-
-async fn registry_translate(
-    server: &str,
-    api_key: &str,
-    artifact_id: &str,
-    target_provider: &str,
-) -> Result<()> {
-    let url = format!("{}/api/v1/config/translate", server.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-
-    let response = client
-        .post(url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&serde_json::json!({
-            "artifact_id": artifact_id,
-            "target_provider": target_provider,
-        }))
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        bail!("Translate failed (HTTP {}): {}", status, body);
-    }
-
-    let body: serde_json::Value = response.json().await?;
-    println!(
-        "{} -> {} | fidelity={} ({:.2})",
-        body["source_provider"].as_str().unwrap_or("unknown"),
-        body["targetProvider"].as_str().unwrap_or("unknown"),
-        body["report"]["label"].as_str().unwrap_or("unknown"),
-        body["report"]["score"].as_f64().unwrap_or(0.0)
-    );
-    let unsupported = body["report"]["unsupportedFields"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    if !unsupported.is_empty() {
-        let fields: Vec<String> = unsupported
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect();
-        println!("Unsupported fields: {}", fields.join(", "));
-    }
-    println!(
-        "Translated:\n{}",
-        serde_json::to_string_pretty(&body["translated"]).unwrap_or_else(|_| "{}".to_string())
-    );
     Ok(())
 }
 
@@ -701,14 +456,6 @@ fn get_api_key() -> Result<String> {
     })
 }
 
-fn get_required_diff_api_key() -> Result<String> {
-    get_api_key().map_err(|_| {
-        anyhow::anyhow!(
-            "Not logged in. Run `getdiff login` first or set DIFF_API_KEY before using registry or publish commands."
-        )
-    })
-}
-
 fn attach_config_snapshot_if_enabled(session: &mut types::DiffSession) -> Result<()> {
     let Some(provider) = parser::provider_from_tool(&session.tool) else {
         return Ok(());
@@ -744,10 +491,7 @@ fn default_diff_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        attach_config_snapshot_if_enabled, ensure_publish_visibility_project_key,
-        sanitize_ucir_for_publish,
-    };
+    use super::attach_config_snapshot_if_enabled;
     use crate::types::DiffSession;
 
     fn base_session(project_path: String) -> DiffSession {
@@ -815,34 +559,5 @@ mod tests {
         assert_eq!(snapshot.snapshot()["active_hooks_count"].as_u64(), Some(1));
         assert_eq!(snapshot.snapshot()["active_mcps_count"].as_u64(), Some(1));
         assert_eq!(snapshot.snapshot()["permission_mode"], "allowlist");
-    }
-
-    #[test]
-    fn sanitize_ucir_rejects_secret_like_content() {
-        let redactor = crate::redact::Redactor::new();
-        let result = sanitize_ucir_for_publish(
-            serde_json::json!({
-                "env": {
-                    "OPENAI_API_KEY": "sk-abcdefghijklmnopqrstuvwxyz123456"
-                }
-            }),
-            &redactor,
-        );
-
-        assert!(result.is_ok());
-        let sanitized = result.expect("redaction should succeed");
-        assert_ne!(
-            sanitized["env"]["OPENAI_API_KEY"].as_str(),
-            Some("sk-abcdefghijklmnopqrstuvwxyz123456")
-        );
-    }
-
-    #[test]
-    fn requires_project_key_for_project_visibility() {
-        let result = ensure_publish_visibility_project_key("project", None);
-        assert!(result.is_err());
-
-        let ok = ensure_publish_visibility_project_key("project", Some("repo-a"));
-        assert!(ok.is_ok());
     }
 }
