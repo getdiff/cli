@@ -223,9 +223,7 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
 
         // Check if the deadline fired (buffer non-empty but recv returned None
         // because the select picked the sleep branch, not because channel closed).
-        let deadline_fired = deadline.is_some()
-            && recv_result.is_none()
-            && !rx.is_closed();
+        let deadline_fired = deadline.is_some() && recv_result.is_none() && !rx.is_closed();
 
         match recv_result {
             Some(ev) => {
@@ -502,10 +500,7 @@ mod tests {
         assert_eq!(event.decision, "denied");
         assert_eq!(event.operation, Some("create_charge".to_string()));
         assert_eq!(event.request_body_hash, Some("abcdef1234".to_string()));
-        assert_eq!(
-            event.policy_rule,
-            Some("max_amount_cents".to_string())
-        );
+        assert_eq!(event.policy_rule, Some("max_amount_cents".to_string()));
         assert_eq!(
             event.intersection_rules,
             Some(vec!["payment-data-restriction".to_string()])
