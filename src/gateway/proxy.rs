@@ -9,8 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use axum::body::Bytes;
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -68,6 +70,8 @@ pub struct GatewayState {
     pub event_sender: EventSender,
     /// Names of active intersection rules (included in shipped events).
     pub active_intersection_names: Vec<String>,
+    /// Intersection rules from config, used to recompute when providers change.
+    pub intersection_rules: Vec<crate::gateway::intersection::IntersectionRule>,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +159,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
             .build()?,
         event_sender,
         active_intersection_names,
+        intersection_rules,
     });
 
     let app = build_router(state);
@@ -163,15 +168,39 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
     eprintln!("gateway proxy listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
+}
+
+/// Middleware that restricts access to loopback addresses only.
+/// Used for `/internal/*` endpoints that should not be reachable from
+/// external clients.
+async fn require_loopback(request: axum::extract::Request, next: Next) -> Response {
+    let is_loopback = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+
+    if !is_loopback {
+        return error_json(
+            StatusCode::FORBIDDEN,
+            "internal endpoints are only accessible from localhost",
+        );
+    }
+
+    next.run(request).await
 }
 
 /// Build the axum `Router` with internal management routes and a fallback
 /// proxy handler.
 pub fn build_router(state: Arc<GatewayState>) -> Router {
-    Router::new()
-        // Internal management endpoints.
+    // Internal management endpoints — restricted to loopback only.
+    let internal_routes = Router::new()
         .route("/internal/audit", get(handle_audit_query))
         .route("/internal/audit/stats", get(handle_audit_stats))
         .route("/internal/harvested", get(handle_harvested))
@@ -183,6 +212,10 @@ pub fn build_router(state: Arc<GatewayState>) -> Router {
         )
         .route("/internal/sessions", post(handle_add_session))
         .route("/internal/sessions/{id}", delete(handle_remove_session))
+        .layer(middleware::from_fn(require_loopback));
+
+    Router::new()
+        .merge(internal_routes)
         // Everything else is a provider proxy request.
         .fallback(handle_proxy_request)
         .with_state(state)
@@ -211,6 +244,9 @@ async fn handle_proxy_request(
         None => (trimmed.to_string(), "/".to_string()),
     };
 
+    // Preserve query string for upstream forwarding.
+    let query_string = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
     if provider_name.is_empty() {
         return error_json(StatusCode::NOT_FOUND, "no provider specified");
     }
@@ -230,6 +266,7 @@ async fn handle_proxy_request(
                     path: &sub_path,
                     decision: "denied",
                     reason: "unknown provider",
+                    matched_rule: "",
                     response_status: 404,
                     learning_mode: false,
                     would_block: false,
@@ -311,11 +348,12 @@ async fn handle_proxy_request(
                 "denied",
             );
 
+            let full_path = format!("{}{}", sub_path, query_string);
             let resp = forward_request(
                 &state,
                 &method,
                 &upstream,
-                &sub_path,
+                &full_path,
                 &headers,
                 &body,
                 &credential,
@@ -333,6 +371,7 @@ async fn handle_proxy_request(
                 path: &sub_path,
                 decision: "allowed",
                 reason: "learning mode: forwarded despite policy denial",
+                matched_rule: &decision.matched_rule,
                 response_status: status_code,
                 learning_mode: true,
                 would_block: true,
@@ -366,6 +405,7 @@ async fn handle_proxy_request(
             path: &sub_path,
             decision: "denied",
             reason: &decision.reason,
+            matched_rule: &decision.matched_rule,
             response_status: 403,
             learning_mode: state.learning_mode,
             would_block: false,
@@ -389,11 +429,12 @@ async fn handle_proxy_request(
     }
 
     // 9. Allowed — forward to upstream.
+    let full_path = format!("{}{}", sub_path, query_string);
     let resp = forward_request(
         &state,
         &method,
         &upstream,
-        &sub_path,
+        &full_path,
         &headers,
         &body,
         &credential,
@@ -420,6 +461,7 @@ async fn handle_proxy_request(
                 path: &sub_path,
                 decision: "allowed",
                 reason: &decision.reason,
+                matched_rule: &decision.matched_rule,
                 response_status: status_code,
                 learning_mode: state.learning_mode,
                 would_block: false,
@@ -447,6 +489,7 @@ async fn handle_proxy_request(
                 path: &sub_path,
                 decision: "error",
                 reason: "upstream error",
+                matched_rule: "",
                 response_status: 502,
                 learning_mode: state.learning_mode,
                 would_block: false,
@@ -460,6 +503,7 @@ async fn handle_proxy_request(
 }
 
 /// Forward an HTTP request to the upstream provider, injecting credentials.
+/// `sub_path` should include the query string if present (e.g., "/v1/charges?limit=10").
 async fn forward_request(
     state: &GatewayState,
     method: &Method,
@@ -629,20 +673,66 @@ async fn handle_add_session(
     // Register each provider from the session into the provider map.
     if let Some(session_providers) = req.providers {
         let mut providers = state.providers.lock().unwrap();
+
+        // Collect the raw policies for the new providers.
+        let mut new_policies: HashMap<String, PolicyConfig> = HashMap::new();
+        let mut new_entries: HashMap<String, (String, String)> = HashMap::new();
+
         for (name, pcfg) in session_providers {
-            let evaluator = if let Some(policy) = pcfg.policy {
-                PolicyEvaluator::new(policy)
-            } else {
-                PolicyEvaluator::new(PolicyConfig::default())
-            };
+            let policy = pcfg.policy.unwrap_or_default();
+            new_policies.insert(name.clone(), policy);
+            new_entries.insert(
+                name,
+                (
+                    pcfg.upstream.unwrap_or_default(),
+                    pcfg.credential.unwrap_or_default(),
+                ),
+            );
+        }
+
+        // Build the full set of base policies (existing + new) for intersection computation.
+        let mut all_policies: HashMap<String, PolicyConfig> = HashMap::new();
+        for (name, entry) in providers.iter() {
+            all_policies.insert(name.clone(), entry.evaluator.config().clone());
+        }
+        for (name, policy) in &new_policies {
+            all_policies.insert(name.clone(), policy.clone());
+        }
+
+        // Recompute intersections across the full provider set.
+        let provider_names: Vec<String> = all_policies.keys().cloned().collect();
+        let active_intersections =
+            compute_intersections(&provider_names, &state.intersection_rules);
+        let merged = merge_intersections(&all_policies, &active_intersections);
+
+        // Insert new providers with merged policies.
+        for (name, (upstream, credential)) in new_entries {
+            let policy = merged.get(&name).cloned().unwrap_or_default();
+            let evaluator = PolicyEvaluator::new(policy);
             providers.insert(
                 name,
                 ProviderEntry {
-                    upstream: pcfg.upstream.unwrap_or_default(),
-                    credential: pcfg.credential.unwrap_or_default(),
+                    upstream,
+                    credential,
                     evaluator,
                 },
             );
+        }
+
+        // Collect names of newly added providers so we can skip them below.
+        let new_names: std::collections::HashSet<String> = new_policies.keys().cloned().collect();
+
+        // Update existing providers whose policies may have changed due to new intersections.
+        for (name, entry) in providers.iter_mut() {
+            if let Some(merged_policy) = merged.get(name)
+                && !new_names.contains(name)
+            {
+                *entry = ProviderEntry {
+                    upstream: entry.upstream.clone(),
+                    credential: entry.credential.clone(),
+                    evaluator: PolicyEvaluator::new(merged_policy.clone()),
+                };
+            }
         }
     }
 
@@ -682,6 +772,7 @@ struct AuditEntry<'a> {
     path: &'a str,
     decision: &'a str,
     reason: &'a str,
+    matched_rule: &'a str,
     response_status: i32,
     learning_mode: bool,
     would_block: bool,
@@ -702,6 +793,7 @@ fn log_audit(entry: AuditEntry<'_>) {
         path: entry.path.to_string(),
         decision: entry.decision.to_string(),
         reason: entry.reason.to_string(),
+        matched_rule: entry.matched_rule.to_string(),
         response_status: Some(entry.response_status as u16),
         latency_ms: Some(latency_ms),
         learning_mode: entry.learning_mode,

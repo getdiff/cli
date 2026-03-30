@@ -24,6 +24,9 @@ pub struct AuditEvent {
     pub would_block: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub would_reason: String,
+    /// The matched policy rule identifier (e.g., "blocked_methods: POST").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub matched_rule: String,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -199,6 +202,7 @@ mod tests {
             learning_mode: false,
             would_block: false,
             would_reason: String::new(),
+            matched_rule: String::new(),
         }
     }
 
@@ -225,6 +229,7 @@ mod tests {
             learning_mode: false,
             would_block: false,
             would_reason: String::new(),
+            matched_rule: String::new(),
         });
 
         let output = {
@@ -258,6 +263,7 @@ mod tests {
             latency_ms: None,
             learning_mode: false,
             would_block: false,
+            matched_rule: String::new(),
             would_reason: String::new(),
         });
 
@@ -414,6 +420,7 @@ mod tests {
                     learning_mode: false,
                     would_block: false,
                     would_reason: String::new(),
+                    matched_rule: String::new(),
                 });
             }));
         }

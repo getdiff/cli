@@ -153,7 +153,7 @@ impl PolicyEvaluator {
         // Check max_amount_cents.
         if let Some(max_amount) = self.config.max_amount_cents
             && let Some(amount) = get_int_param(params, "amount")
-            && amount > max_amount
+            && amount > max_amount as i128
         {
             return Some(Decision {
                 allowed: false,
@@ -239,8 +239,17 @@ impl PolicyEvaluator {
 }
 
 /// Extracts an integer parameter from the map.
-fn get_int_param(params: &HashMap<String, serde_json::Value>, key: &str) -> Option<i64> {
-    params.get(key).and_then(|v| v.as_i64())
+/// Handles both signed (i64) and unsigned (u64) JSON numbers by
+/// promoting to i128, so values > i64::MAX are not silently skipped.
+fn get_int_param(params: &HashMap<String, serde_json::Value>, key: &str) -> Option<i128> {
+    let v = params.get(key)?;
+    if let Some(n) = v.as_i64() {
+        Some(n as i128)
+    } else if let Some(n) = v.as_u64() {
+        Some(n as i128)
+    } else {
+        None
+    }
 }
 
 /// Extracts a string slice parameter from the map.
@@ -271,7 +280,7 @@ fn match_path(pattern: &str, path: &str) -> bool {
         if *pp == "*" {
             continue;
         }
-        if !pp.eq_ignore_ascii_case(pathp) {
+        if *pp != *pathp {
             return false;
         }
     }

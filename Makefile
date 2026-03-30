@@ -1,4 +1,4 @@
-.PHONY: build test gateway-test investor-demo sidecar clean
+.PHONY: build test gateway-test investor-demo sidecar docker-sidecar clean
 
 build:
 	cargo build --release

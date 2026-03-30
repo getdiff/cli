@@ -562,18 +562,31 @@ fn parse_gmail_mime_body(body: &[u8]) -> HashMap<String, String> {
 }
 
 /// Simple MIME header parser. Reads lines until empty line.
+/// Handles folded (continuation) lines starting with space or tab.
 fn parse_mime_headers(mime: &str) -> HashMap<String, String> {
-    let mut headers = HashMap::new();
+    let mut headers: HashMap<String, String> = HashMap::new();
+    let mut last_key: Option<String> = None;
     for line in mime.split('\n') {
         let line = line.trim_end_matches('\r');
         if line.is_empty() {
             break;
         }
+        // Continuation line: starts with space or tab.
+        if line.starts_with(' ') || line.starts_with('\t') {
+            if let Some(ref key) = last_key {
+                if let Some(existing) = headers.get_mut(key) {
+                    existing.push(' ');
+                    existing.push_str(line.trim());
+                }
+            }
+            continue;
+        }
         if let Some(idx) = line.find(':') {
             let key = line[..idx].trim();
             let val = line[idx + 1..].trim();
             let key = canonical_header_key(key);
-            headers.insert(key, val.to_string());
+            headers.insert(key.clone(), val.to_string());
+            last_key = Some(key);
         }
     }
     headers
@@ -608,8 +621,9 @@ fn parse_address_list(value: &str) -> Vec<String> {
             }
             // Strip "Display Name <email>" format.
             if let Some(start) = addr.find('<')
-                && let Some(end) = addr.find('>')
+                && let Some(end) = addr[start + 1..].find('>')
             {
+                let end = start + 1 + end;
                 return Some(addr[start + 1..end].trim().to_lowercase());
             }
             Some(addr.to_lowercase())

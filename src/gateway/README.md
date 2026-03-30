@@ -89,6 +89,6 @@ See `config/gateway-test.yaml` for the full example. The key sections:
 
 ## Test Coverage
 
-- **149 unit tests** across all modules (inline `#[cfg(test)]`)
+- **196 unit tests** across all modules (inline `#[cfg(test)]`)
 - **30 integration tests** (`scripts/integration-test.sh`) covering all 9 categories:
   GitHub (5), Stripe (6), Gmail (5), Intersection (3), Learning Mode (3), Harvesting (2), Profiling (2), Audit (3), Unknown Provider (1)

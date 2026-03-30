@@ -203,15 +203,37 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
         .unwrap();
 
     let mut buffer: Vec<Event> = Vec::with_capacity(config.flush_count);
+    // Deadline tracks the age of the oldest buffered event.
+    let mut deadline: Option<tokio::time::Instant> = None;
 
     loop {
-        // Wait for either: an event, a timeout, or channel close.
-        let mut timed_out = false;
+        // Determine how long to wait: if we have buffered events, wait until
+        // the deadline; otherwise wait indefinitely for the next event.
+        let recv_result = if let Some(dl) = deadline {
+            tokio::select! {
+                biased;
+                result = rx.recv() => result,
+                _ = tokio::time::sleep_until(dl) => None,
+            }
+        } else {
+            // No deadline — block until an event arrives (or channel closes).
+            // We distinguish "channel closed" from "deadline fired" below.
+            rx.recv().await
+        };
 
-        match tokio::time::timeout(config.flush_interval, rx.recv()).await {
-            // Received an event before timeout.
-            Ok(Some(ev)) => {
+        // Check if the deadline fired (buffer non-empty but recv returned None
+        // because the select picked the sleep branch, not because channel closed).
+        let deadline_fired = deadline.is_some()
+            && recv_result.is_none()
+            && !rx.is_closed();
+
+        match recv_result {
+            Some(ev) => {
                 buffer.push(ev);
+                // Set deadline when buffer transitions from empty to non-empty.
+                if deadline.is_none() {
+                    deadline = Some(tokio::time::Instant::now() + config.flush_interval);
+                }
                 // Drain any additional events that are ready (non-blocking).
                 while buffer.len() < config.flush_count {
                     match rx.try_recv() {
@@ -220,22 +242,22 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
                     }
                 }
             }
-            // Channel closed — flush remaining and exit.
-            Ok(None) => {
+            None if !deadline_fired => {
+                // Channel closed — flush remaining and exit.
                 if !buffer.is_empty() {
                     flush(&client, &config, &mut buffer).await;
                 }
                 return;
             }
-            // Timeout — flush whatever we have.
-            Err(_) => {
-                timed_out = true;
+            None => {
+                // Deadline fired — fall through to flush check.
             }
         }
 
-        // Flush if we hit the count threshold or the timer fired with data.
-        if buffer.len() >= config.flush_count || (timed_out && !buffer.is_empty()) {
+        // Flush if we hit the count threshold or the deadline fired with data.
+        if buffer.len() >= config.flush_count || (deadline_fired && !buffer.is_empty()) {
             flush(&client, &config, &mut buffer).await;
+            deadline = None;
         }
     }
 }
@@ -252,6 +274,13 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
     }
 
     // Send in chunks of 1000 (server max batch size).
+    // Only remove events that were successfully acknowledged by the server.
+    let url = format!(
+        "{}/v1/events",
+        config.control_plane_url.trim_end_matches('/')
+    );
+
+    let mut sent = 0usize;
     for chunk in buffer.chunks(1000) {
         let batch = EventBatch {
             schema_version: 1,
@@ -259,36 +288,49 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
             events: chunk.to_vec(),
         };
 
-        let url = format!(
-            "{}/v1/events",
-            config.control_plane_url.trim_end_matches('/')
-        );
-
         match client.post(&url).json(&batch).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    if let Ok(body) = resp.json::<BatchResponse>().await
-                        && body.rejected > 0
-                    {
-                        eprintln!(
-                            "[gateway events] batch: {} accepted, {} rejected",
-                            body.accepted, body.rejected
-                        );
-                        for err in &body.errors {
-                            eprintln!("[gateway events]   event {}: {}", err.index, err.reason);
+                    match resp.json::<BatchResponse>().await {
+                        Ok(body) => {
+                            if body.rejected > 0 {
+                                eprintln!(
+                                    "[gateway events] batch: {} accepted, {} rejected",
+                                    body.accepted, body.rejected
+                                );
+                                for err in &body.errors {
+                                    eprintln!(
+                                        "[gateway events]   event {}: {}",
+                                        err.index, err.reason
+                                    );
+                                }
+                            }
+                            // Only count accepted events as sent.
+                            sent += body.accepted;
+                        }
+                        Err(_) => {
+                            // Could not parse response — keep events for retry.
+                            break;
                         }
                     }
                 } else {
                     eprintln!("[gateway events] flush failed: HTTP {}", resp.status());
+                    break; // Stop sending; keep remaining events for retry.
                 }
             }
             Err(e) => {
                 eprintln!("[gateway events] flush error: {}", e);
+                break; // Stop sending; keep remaining events for retry.
             }
         }
     }
 
-    buffer.clear();
+    // Remove only the events that were acknowledged.
+    if sent >= buffer.len() {
+        buffer.clear();
+    } else if sent > 0 {
+        buffer.drain(..sent);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,10 +375,10 @@ impl Event {
             mcp_tool_name: None,
             mcp_server: None,
             intersection_rules,
-            policy_rule: if audit.reason.is_empty() {
+            policy_rule: if audit.matched_rule.is_empty() {
                 None
             } else {
-                Some(audit.reason.clone())
+                Some(audit.matched_rule.clone())
             },
             credential_id: None,
             credential_ttl: None,
@@ -446,6 +488,7 @@ mod tests {
             learning_mode: false,
             would_block: false,
             would_reason: String::new(),
+            matched_rule: "max_amount_cents".to_string(),
         };
 
         let event = Event::from_audit(
@@ -461,7 +504,7 @@ mod tests {
         assert_eq!(event.request_body_hash, Some("abcdef1234".to_string()));
         assert_eq!(
             event.policy_rule,
-            Some("amount 3000 exceeds max_amount_cents 1000".to_string())
+            Some("max_amount_cents".to_string())
         );
         assert_eq!(
             event.intersection_rules,
@@ -486,6 +529,7 @@ mod tests {
             learning_mode: true,
             would_block: true,
             would_reason: "method POST is blocked".to_string(),
+            matched_rule: String::new(),
         };
 
         let event = Event::from_audit(&audit, None, None, None);

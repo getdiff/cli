@@ -59,7 +59,7 @@ impl Harvester {
         let fp = fingerprint(&cred_value);
         let now = Utc::now();
 
-        let mut observed = self.inner.lock().unwrap();
+        let mut observed = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if let Some(existing) = observed.get_mut(&fp) {
             existing.last_seen = now;
@@ -82,7 +82,7 @@ impl Harvester {
 
     /// Returns all observed credentials (without the raw values).
     pub fn list(&self) -> Vec<ObservedCredential> {
-        let observed = self.inner.lock().unwrap();
+        let observed = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         observed
             .values()
             .map(|oc| ObservedCredential {
@@ -101,13 +101,13 @@ impl Harvester {
     /// Used when the user decides to harvest (store in vault).
     #[allow(dead_code)]
     pub fn get_value(&self, fp: &str) -> Option<String> {
-        let observed = self.inner.lock().unwrap();
+        let observed = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         observed.get(fp).map(|oc| oc.value.clone())
     }
 
     /// Returns summary statistics.
     pub fn stats(&self) -> HarvestStats {
-        let observed = self.inner.lock().unwrap();
+        let observed = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut providers = std::collections::HashSet::new();
         let mut total_requests = 0;
 

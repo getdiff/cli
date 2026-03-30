@@ -29,12 +29,24 @@ async fn main() {
     };
 
     let port: u16 = if args.len() > 2 {
-        args[2].parse().expect("invalid port number")
+        match args[2].parse() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("fatal: invalid port '{}': {}", args[2], e);
+                std::process::exit(1);
+            }
+        }
     } else {
-        std::env::var("GATEWAY_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8080)
+        match std::env::var("GATEWAY_PORT") {
+            Ok(p) => match p.parse() {
+                Ok(port) => port,
+                Err(e) => {
+                    eprintln!("fatal: invalid GATEWAY_PORT '{}': {}", p, e);
+                    std::process::exit(1);
+                }
+            },
+            Err(_) => 8080,
+        }
     };
 
     eprintln!("gateway-sidecar starting");

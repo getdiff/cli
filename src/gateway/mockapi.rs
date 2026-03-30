@@ -7,7 +7,7 @@
 //! - `/gmail/*`  — mock Gmail API
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -90,7 +90,7 @@ fn authed_json(status: StatusCode, auth: &str, body: Value) -> Response {
     let mut resp = json_response(status, body);
     resp.headers_mut().insert(
         "X-Received-Auth",
-        auth.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        HeaderValue::from_str(auth).unwrap_or_else(|_| HeaderValue::from_static("invalid")),
     );
     resp
 }
@@ -210,7 +210,7 @@ async fn handle_github(
     }
 
     // GET /rate_limit
-    if path == "/rate_limit" {
+    if method == Method::GET && path == "/rate_limit" {
         return authed_json(
             StatusCode::OK,
             &auth,
@@ -378,18 +378,21 @@ async fn handle_stripe(
     }
 
     // GET /v1/subscriptions/{id} — not in the Go code but listed in spec
-    if method == Method::GET && path.starts_with("/v1/subscriptions/") {
-        let sub_id = path.trim_start_matches("/v1/subscriptions/");
-        return authed_json(
-            StatusCode::OK,
-            &auth,
-            json!({
-                "id": sub_id,
-                "object": "subscription",
-                "status": "active",
-                "customer": "cus_1"
-            }),
-        );
+    if method == Method::GET {
+        if let Some(sub_id) = path.strip_prefix("/v1/subscriptions/") {
+            if !sub_id.is_empty() && !sub_id.contains('/') {
+                return authed_json(
+                    StatusCode::OK,
+                    &auth,
+                    json!({
+                        "id": sub_id,
+                        "object": "subscription",
+                        "status": "active",
+                        "customer": "cus_1"
+                    }),
+                );
+            }
+        }
     }
 
     authed_json(
@@ -455,8 +458,10 @@ async fn handle_gmail(
     // router prefix /gmail.
     // The proxy sends /{upstream_prefix}/{api_path}.
     // Gmail API paths are /gmail/v1/..., so we may see /gmail/gmail/v1/...
-    let path = full_path.trim_start_matches("/gmail");
-    let path = path.trim_start_matches("/gmail"); // handle double prefix
+    let mut path = full_path;
+    while let Some(stripped) = path.strip_prefix("/gmail") {
+        path = stripped;
+    }
     let path = if path.is_empty() { "/" } else { path };
 
     eprintln!("[gmail] {} {}", method, path);

@@ -96,7 +96,10 @@ impl Profiler {
             *pp.methods.entry(method.to_string()).or_insert(0) += 1;
         }
         if !path.is_empty() {
-            *pp.unique_paths.entry(path.to_string()).or_insert(0) += 1;
+            const MAX_UNIQUE_PATHS: usize = 1000;
+            if pp.unique_paths.len() < MAX_UNIQUE_PATHS || pp.unique_paths.contains_key(path) {
+                *pp.unique_paths.entry(path.to_string()).or_insert(0) += 1;
+            }
         }
         if decision == "denied" {
             pp.blocked_count += 1;
