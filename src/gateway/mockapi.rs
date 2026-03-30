@@ -378,21 +378,21 @@ async fn handle_stripe(
     }
 
     // GET /v1/subscriptions/{id} — not in the Go code but listed in spec
-    if method == Method::GET {
-        if let Some(sub_id) = path.strip_prefix("/v1/subscriptions/") {
-            if !sub_id.is_empty() && !sub_id.contains('/') {
-                return authed_json(
-                    StatusCode::OK,
-                    &auth,
-                    json!({
-                        "id": sub_id,
-                        "object": "subscription",
-                        "status": "active",
-                        "customer": "cus_1"
-                    }),
-                );
-            }
-        }
+    if method == Method::GET
+        && let Some(sub_id) = path.strip_prefix("/v1/subscriptions/")
+        && !sub_id.is_empty()
+        && !sub_id.contains('/')
+    {
+        return authed_json(
+            StatusCode::OK,
+            &auth,
+            json!({
+                "id": sub_id,
+                "object": "subscription",
+                "status": "active",
+                "customer": "cus_1"
+            }),
+        );
     }
 
     authed_json(

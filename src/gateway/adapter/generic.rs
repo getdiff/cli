@@ -573,11 +573,11 @@ fn parse_mime_headers(mime: &str) -> HashMap<String, String> {
         }
         // Continuation line: starts with space or tab.
         if line.starts_with(' ') || line.starts_with('\t') {
-            if let Some(ref key) = last_key {
-                if let Some(existing) = headers.get_mut(key) {
-                    existing.push(' ');
-                    existing.push_str(line.trim());
-                }
+            if let Some(ref key) = last_key
+                && let Some(existing) = headers.get_mut(key)
+            {
+                existing.push(' ');
+                existing.push_str(line.trim());
             }
             continue;
         }

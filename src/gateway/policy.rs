@@ -245,10 +245,8 @@ fn get_int_param(params: &HashMap<String, serde_json::Value>, key: &str) -> Opti
     let v = params.get(key)?;
     if let Some(n) = v.as_i64() {
         Some(n as i128)
-    } else if let Some(n) = v.as_u64() {
-        Some(n as i128)
     } else {
-        None
+        v.as_u64().map(|n| n as i128)
     }
 }
 
