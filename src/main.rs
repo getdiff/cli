@@ -4,6 +4,7 @@ mod auth;
 mod config_history;
 mod config_snapshot;
 mod detectors;
+mod gateway;
 mod parser;
 mod redact;
 mod types;
@@ -105,6 +106,24 @@ enum Commands {
     Artifacts {
         #[command(subcommand)]
         command: ArtifactCommands,
+    },
+
+    /// Run the agent capability gateway proxy
+    Gateway {
+        /// Path to gateway config YAML file
+        #[arg(long, short, default_value = "gateway.yaml")]
+        config: String,
+
+        /// Port to listen on
+        #[arg(long, short, default_value_t = 8080)]
+        port: u16,
+    },
+
+    /// Run the mock API server (for gateway testing/demos)
+    MockApi {
+        /// Port to listen on
+        #[arg(long, short, default_value_t = 9999)]
+        port: u16,
     },
 }
 
@@ -262,6 +281,12 @@ async fn main() -> Result<()> {
             let api_key = get_api_key()?;
             let diff_dir = default_diff_dir();
             artifact_sync::run_sync_cycle(&server, &api_key, &diff_dir).await?;
+        }
+        Commands::Gateway { config, port } => {
+            gateway::proxy::run_proxy_from_file(&config, port).await?;
+        }
+        Commands::MockApi { port } => {
+            gateway::mockapi::run_mock_api(port).await?;
         }
         Commands::Artifacts { command } => match command {
             ArtifactCommands::List {

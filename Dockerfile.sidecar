@@ -1,0 +1,13 @@
+FROM rust:1.85-alpine AS build
+RUN apk add --no-cache musl-dev
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY src/ src/
+RUN cargo build --release --bin gateway-sidecar
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+RUN addgroup -S gateway && adduser -S gateway -G gateway
+COPY --from=build /app/target/release/gateway-sidecar /usr/local/bin/gateway-sidecar
+USER gateway
+ENTRYPOINT ["gateway-sidecar"]
