@@ -124,8 +124,8 @@ impl Profiler {
             // Suggest method restriction if only read methods were used.
             let mut methods: Vec<String> = pp.methods.keys().cloned().collect();
             methods.sort();
-            let all_read_only = !methods.is_empty()
-                && methods.iter().all(|m| m == "GET" || m == "HEAD");
+            let all_read_only =
+                !methods.is_empty() && methods.iter().all(|m| m == "GET" || m == "HEAD");
 
             if all_read_only {
                 suggestions.push(PolicySuggestion {
@@ -320,7 +320,10 @@ mod tests {
         let found = suggestions
             .iter()
             .any(|s| s.suggestion_type == "restrict_methods" && s.provider == "github");
-        assert!(found, "expected restrict_methods suggestion for read-only agent");
+        assert!(
+            found,
+            "expected restrict_methods suggestion for read-only agent"
+        );
 
         // Check confidence.
         let s = suggestions

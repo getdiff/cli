@@ -176,19 +176,13 @@ pub fn build_router(state: Arc<GatewayState>) -> Router {
         .route("/internal/audit/stats", get(handle_audit_stats))
         .route("/internal/harvested", get(handle_harvested))
         .route("/internal/harvested/stats", get(handle_harvested_stats))
-        .route(
-            "/internal/profile/{session_id}",
-            get(handle_profile),
-        )
+        .route("/internal/profile/{session_id}", get(handle_profile))
         .route(
             "/internal/profile/{session_id}/suggest",
             get(handle_suggest),
         )
         .route("/internal/sessions", post(handle_add_session))
-        .route(
-            "/internal/sessions/{id}",
-            delete(handle_remove_session),
-        )
+        .route("/internal/sessions/{id}", delete(handle_remove_session))
         // Everything else is a provider proxy request.
         .fallback(handle_proxy_request)
         .with_state(state)
@@ -298,7 +292,9 @@ async fn handle_proxy_request(
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.to_string(), val.to_string())))
         .collect();
-    state.harvester.observe(&provider_name, &header_map, uri.query().unwrap_or(""));
+    state
+        .harvester
+        .observe(&provider_name, &header_map, uri.query().unwrap_or(""));
 
     // 8. Handle policy decision.
     if !decision.allowed {
@@ -324,10 +320,7 @@ async fn handle_proxy_request(
             )
             .await;
 
-            let status_code = resp
-                .as_ref()
-                .map(|r| r.status().as_u16())
-                .unwrap_or(502) as i32;
+            let status_code = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(502) as i32;
 
             log_audit_event_with_body(
                 &state,
@@ -570,24 +563,18 @@ async fn handle_audit_query(
 }
 
 /// GET /internal/audit/stats — aggregate audit statistics.
-async fn handle_audit_stats(
-    State(state): State<Arc<GatewayState>>,
-) -> impl IntoResponse {
+async fn handle_audit_stats(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
     Json(state.audit.stats())
 }
 
 /// GET /internal/harvested — list observed credentials.
-async fn handle_harvested(
-    State(state): State<Arc<GatewayState>>,
-) -> impl IntoResponse {
+async fn handle_harvested(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
     let credentials = state.harvester.list();
     Json(json!({ "credentials": credentials }))
 }
 
 /// GET /internal/harvested/stats — harvest statistics.
-async fn handle_harvested_stats(
-    State(state): State<Arc<GatewayState>>,
-) -> impl IntoResponse {
+async fn handle_harvested_stats(State(state): State<Arc<GatewayState>>) -> impl IntoResponse {
     Json(state.harvester.stats())
 }
 
@@ -755,7 +742,8 @@ fn log_audit_event_with_body(
     } else {
         Some(state.active_intersection_names.clone())
     };
-    let mut event = events::Event::from_audit(&audit_event, body_hash, parameters, intersection_rules);
+    let mut event =
+        events::Event::from_audit(&audit_event, body_hash, parameters, intersection_rules);
     event.agent_type = state.agent_type.clone();
     event.project_id = state.project_id.clone();
     event.environment = state.environment.clone();

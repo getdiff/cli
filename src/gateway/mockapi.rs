@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Server entry point
@@ -401,7 +401,10 @@ async fn handle_stripe(
 
 /// Parse a Stripe request body. Stripe accepts both `application/json` and
 /// `application/x-www-form-urlencoded`.
-fn parse_stripe_body(headers: &HeaderMap, body: &Bytes) -> std::collections::HashMap<String, String> {
+fn parse_stripe_body(
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> std::collections::HashMap<String, String> {
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
@@ -601,7 +604,9 @@ mod tests {
         let response = {
             use tower::ServiceExt;
             app.into_service().oneshot(resp)
-        }.await.unwrap();
+        }
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -617,7 +622,9 @@ mod tests {
         let response = {
             use tower::ServiceExt;
             app.into_service().oneshot(req)
-        }.await.unwrap();
+        }
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -634,7 +641,9 @@ mod tests {
         let response = {
             use tower::ServiceExt;
             app.into_service().oneshot(req)
-        }.await.unwrap();
+        }
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get("X-Received-Auth").unwrap(),
@@ -655,7 +664,9 @@ mod tests {
         let response = {
             use tower::ServiceExt;
             app.into_service().oneshot(req)
-        }.await.unwrap();
+        }
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -672,7 +683,9 @@ mod tests {
         let response = {
             use tower::ServiceExt;
             app.into_service().oneshot(req)
-        }.await.unwrap();
+        }
+        .await
+        .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 }

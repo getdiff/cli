@@ -126,10 +126,7 @@ impl Harvester {
 
 /// Checks headers and query params for credentials.
 /// Returns (credential_type, credential_value), or empty strings if none found.
-fn detect_credential(
-    headers: &HashMap<String, String>,
-    raw_query: &str,
-) -> (String, String) {
+fn detect_credential(headers: &HashMap<String, String>, raw_query: &str) -> (String, String) {
     // Check Authorization header (case-insensitive key lookup).
     if let Some(auth) = get_header_case_insensitive(headers, "authorization") {
         let lower = auth.to_lowercase();
@@ -187,7 +184,10 @@ pub fn fingerprint(value: &str) -> String {
     hasher.update(value.as_bytes());
     let hash = hasher.finalize();
     // 6 bytes = 12 hex chars.
-    format!("{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", hash[0], hash[1], hash[2], hash[3], hash[4], hash[5])
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3], hash[4], hash[5]
+    )
 }
 
 #[cfg(test)]

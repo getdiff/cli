@@ -114,9 +114,7 @@ pub fn get_or_create_daemon_id() -> String {
     }
 
     // Generate a new one: {hostname}-{random_suffix}
-    let hostname = gethostname::gethostname()
-        .to_string_lossy()
-        .to_string();
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
     let suffix = uuid::Uuid::new_v4().to_string()[..8].to_string();
     let daemon_id = format!("{}-{}", hostname, suffix);
 
@@ -276,18 +274,12 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
                                 body.accepted, body.rejected
                             );
                             for err in &body.errors {
-                                eprintln!(
-                                    "[gateway events]   event {}: {}",
-                                    err.index, err.reason
-                                );
+                                eprintln!("[gateway events]   event {}: {}", err.index, err.reason);
                             }
                         }
                     }
                 } else {
-                    eprintln!(
-                        "[gateway events] flush failed: HTTP {}",
-                        resp.status()
-                    );
+                    eprintln!("[gateway events] flush failed: HTTP {}", resp.status());
                 }
             }
             Err(e) => {
@@ -384,7 +376,10 @@ mod tests {
         let hash = hash_request_body(b"amount=3000&currency=usd").unwrap();
         assert_eq!(hash.len(), 64); // SHA-256 hex
         // Same input → same hash
-        assert_eq!(hash, hash_request_body(b"amount=3000&currency=usd").unwrap());
+        assert_eq!(
+            hash,
+            hash_request_body(b"amount=3000&currency=usd").unwrap()
+        );
     }
 
     #[test]

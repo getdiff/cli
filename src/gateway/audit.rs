@@ -184,12 +184,7 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Arc;
 
-    fn new_event(
-        session_id: &str,
-        provider: &str,
-        decision: &str,
-        operation: &str,
-    ) -> AuditEvent {
+    fn new_event(session_id: &str, provider: &str, decision: &str, operation: &str) -> AuditEvent {
         AuditEvent {
             timestamp: String::new(),
             session_id: session_id.to_string(),
@@ -314,12 +309,7 @@ mod tests {
 
         logger.log(new_event("sess-1", "github", "allowed", "get_user"));
         logger.log(new_event("sess-1", "github", "denied", "create_issue"));
-        logger.log(new_event(
-            "sess-1",
-            "stripe",
-            "denied",
-            "create_transfer",
-        ));
+        logger.log(new_event("sess-1", "stripe", "denied", "create_transfer"));
 
         let results = logger.query(&AuditFilter {
             decision: "denied".to_string(),

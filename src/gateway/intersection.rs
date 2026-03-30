@@ -107,8 +107,7 @@ fn merge_policy_single(mut base: PolicyConfig, restriction: &PolicyConfig) -> Po
     }
     if !restriction.allowed_paths.is_empty() {
         if !base.allowed_paths.is_empty() {
-            base.allowed_paths =
-                intersect_strings(&base.allowed_paths, &restriction.allowed_paths);
+            base.allowed_paths = intersect_strings(&base.allowed_paths, &restriction.allowed_paths);
         } else {
             base.allowed_paths = restriction.allowed_paths.clone();
         }
@@ -174,7 +173,10 @@ fn union_strings(a: &[String], b: &[String]) -> Vec<String> {
 /// Returns the intersection of two string slices.
 fn intersect_strings(a: &[String], b: &[String]) -> Vec<String> {
     let b_set: HashSet<&str> = b.iter().map(|s| s.as_str()).collect();
-    a.iter().filter(|s| b_set.contains(s.as_str())).cloned().collect()
+    a.iter()
+        .filter(|s| b_set.contains(s.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Returns the minimum of two optional i64 values.

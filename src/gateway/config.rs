@@ -216,10 +216,12 @@ intersection_policies:
             vec!["POST", "PUT", "DELETE", "PATCH"]
         );
         assert!(github.policies.allowed_paths.contains(&"/user".to_string()));
-        assert!(github
-            .policies
-            .blocked_paths
-            .contains(&"/repos/*/*/issues".to_string()));
+        assert!(
+            github
+                .policies
+                .blocked_paths
+                .contains(&"/repos/*/*/issues".to_string())
+        );
     }
 
     #[test]
@@ -229,10 +231,12 @@ intersection_policies:
         assert_eq!(stripe.upstream, "https://api.stripe.com");
         assert_eq!(stripe.policies.max_amount_cents, Some(5000));
         assert_eq!(stripe.policies.allowed_currencies, vec!["usd"]);
-        assert!(stripe
-            .policies
-            .blocked_operations
-            .contains(&"create_transfer".to_string()));
+        assert!(
+            stripe
+                .policies
+                .blocked_operations
+                .contains(&"create_transfer".to_string())
+        );
     }
 
     #[test]
@@ -241,10 +245,7 @@ intersection_policies:
         let gmail = config.providers.get("gmail").unwrap();
         assert_eq!(gmail.upstream, "https://gmail.googleapis.com");
         assert_eq!(gmail.policies.max_recipients_per_message, Some(5));
-        assert_eq!(
-            gmail.policies.allowed_recipients,
-            vec!["*@acme.com"]
-        );
+        assert_eq!(gmail.policies.allowed_recipients, vec!["*@acme.com"]);
     }
 
     #[test]

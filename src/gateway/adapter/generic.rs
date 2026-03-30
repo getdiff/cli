@@ -199,10 +199,8 @@ impl GenericAdapter {
                                     params.insert(key.to_string(), serde_json::json!(arr));
                                 }
                             } else {
-                                params.insert(
-                                    key.to_string(),
-                                    serde_json::Value::String(v.clone()),
-                                );
+                                params
+                                    .insert(key.to_string(), serde_json::Value::String(v.clone()));
                             }
                         }
                     }
@@ -306,10 +304,7 @@ impl GenericAdapter {
             );
         }
         if !rpc_id.is_empty() {
-            params.insert(
-                "mcp_rpc_id".to_string(),
-                serde_json::Value::String(rpc_id),
-            );
+            params.insert("mcp_rpc_id".to_string(), serde_json::Value::String(rpc_id));
         }
 
         ParsedOperation {
@@ -437,11 +432,14 @@ fn parse_jsonrpc_body(body: &[u8]) -> HashMap<String, String> {
 
     // Extract ID.
     if let Some(id) = obj.get("id") {
-        map.insert("_rpc_id".to_string(), match id {
-            serde_json::Value::Number(n) => n.to_string(),
-            serde_json::Value::String(s) => s.clone(),
-            _ => id.to_string(),
-        });
+        map.insert(
+            "_rpc_id".to_string(),
+            match id {
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::String(s) => s.clone(),
+                _ => id.to_string(),
+            },
+        );
     }
 
     // Extract params.
@@ -741,7 +739,10 @@ mod tests {
 
     #[test]
     fn test_path_multi_wildcard() {
-        assert!(match_path_pattern("/repos/*/*", "/repos/octocat/Hello-World"));
+        assert!(match_path_pattern(
+            "/repos/*/*",
+            "/repos/octocat/Hello-World"
+        ));
     }
 
     #[test]
@@ -851,11 +852,7 @@ mod tests {
         let body = format!(r#"{{"raw":"{}"}}"#, raw);
 
         let adapter = gmail_adapter();
-        let op = adapter.parse_request(
-            "POST",
-            "/gmail/v1/users/me/messages/send",
-            body.as_bytes(),
-        );
+        let op = adapter.parse_request("POST", "/gmail/v1/users/me/messages/send", body.as_bytes());
         assert_eq!(op.operation, "send_email");
         let recipients = op.parameters["recipients"].as_array().unwrap();
         assert_eq!(recipients.len(), 1);
@@ -872,11 +869,7 @@ mod tests {
     #[test]
     fn test_gmail_modify_message() {
         let adapter = gmail_adapter();
-        let op = adapter.parse_request(
-            "POST",
-            "/gmail/v1/users/me/messages/msg123/modify",
-            b"{}",
-        );
+        let op = adapter.parse_request("POST", "/gmail/v1/users/me/messages/msg123/modify", b"{}");
         assert_eq!(op.operation, "modify_message");
     }
 
@@ -982,13 +975,11 @@ operations:
                             path: "insert_record".into(),
                         },
                         name: "database_insert".into(),
-                        extract: vec![
-                            FieldExtraction {
-                                param: "table".into(),
-                                field: "table".into(),
-                                field_type: "string".into(),
-                            },
-                        ],
+                        extract: vec![FieldExtraction {
+                            param: "table".into(),
+                            field: "table".into(),
+                            field_type: "string".into(),
+                        }],
                     },
                 ],
             },
@@ -1072,7 +1063,10 @@ operations:
         let op = adapter.parse_request("POST", "/", body.to_string().as_bytes());
         // Not tools/call — operation is the RPC method.
         assert_eq!(op.operation, "resources/read");
-        assert_eq!(op.parameters["uri"], serde_json::json!("file:///tmp/data.csv"));
+        assert_eq!(
+            op.parameters["uri"],
+            serde_json::json!("file:///tmp/data.csv")
+        );
     }
 
     #[test]

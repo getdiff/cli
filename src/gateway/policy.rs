@@ -336,10 +336,7 @@ mod tests {
     use super::*;
 
     fn make_params(items: Vec<(&str, serde_json::Value)>) -> HashMap<String, serde_json::Value> {
-        items
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
-            .collect()
+        items.into_iter().map(|(k, v)| (k.to_string(), v)).collect()
     }
 
     #[test]
@@ -399,7 +396,12 @@ mod tests {
             ..Default::default()
         });
 
-        let d = e.evaluate("GET", "/repos/octocat/Hello-World/issues", "", &HashMap::new());
+        let d = e.evaluate(
+            "GET",
+            "/repos/octocat/Hello-World/issues",
+            "",
+            &HashMap::new(),
+        );
         assert!(!d.allowed);
     }
 
@@ -436,7 +438,12 @@ mod tests {
             ..Default::default()
         });
 
-        let d = e.evaluate("GET", "/repos/octocat/Hello-World/issues", "", &HashMap::new());
+        let d = e.evaluate(
+            "GET",
+            "/repos/octocat/Hello-World/issues",
+            "",
+            &HashMap::new(),
+        );
         assert!(!d.allowed);
     }
 
@@ -455,7 +462,12 @@ mod tests {
             ..Default::default()
         });
 
-        let d = e.evaluate("GET", "/repos/octocat/Hello-World/issues", "", &HashMap::new());
+        let d = e.evaluate(
+            "GET",
+            "/repos/octocat/Hello-World/issues",
+            "",
+            &HashMap::new(),
+        );
         assert!(!d.allowed);
 
         let d = e.evaluate("GET", "/repos", "", &HashMap::new());
