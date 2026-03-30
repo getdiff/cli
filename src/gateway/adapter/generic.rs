@@ -175,10 +175,10 @@ impl GenericAdapter {
     /// Standard REST parsing: match method + path to find the operation.
     fn parse_rest_request(&self, method: &str, path: &str, body: &[u8]) -> ParsedOperation {
         for op_def in &self.operations {
-            if let Some(ref m) = op_def.matcher.method {
-                if !m.eq_ignore_ascii_case(method) {
-                    continue;
-                }
+            if let Some(ref m) = op_def.matcher.method
+                && !m.eq_ignore_ascii_case(method)
+            {
+                continue;
             }
             if !match_path_pattern(&op_def.matcher.path, path) {
                 continue;
@@ -192,16 +192,15 @@ impl GenericAdapter {
             // This prevents GET requests (empty body) from getting recipients: ["unknown"].
             if self.body_format == "gmail_mime" && !body.is_empty() {
                 for key in &["recipients", "subject"] {
-                    if !params.contains_key(*key) {
-                        if let Some(v) = body_fields.get(*key) {
-                            if *key == "recipients" {
-                                if let Ok(arr) = serde_json::from_str::<Vec<String>>(v) {
-                                    params.insert(key.to_string(), serde_json::json!(arr));
-                                }
-                            } else {
-                                params
-                                    .insert(key.to_string(), serde_json::Value::String(v.clone()));
+                    if !params.contains_key(*key)
+                        && let Some(v) = body_fields.get(*key)
+                    {
+                        if *key == "recipients" {
+                            if let Ok(arr) = serde_json::from_str::<Vec<String>>(v) {
+                                params.insert(key.to_string(), serde_json::json!(arr));
                             }
+                        } else {
+                            params.insert(key.to_string(), serde_json::Value::String(v.clone()));
                         }
                     }
                 }
@@ -371,24 +370,24 @@ fn match_path_pattern(pattern: &str, path: &str) -> bool {
 /// Parse a JSON body into a flat key→string map (top-level fields only).
 fn parse_json_body(body: &[u8]) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    if let Ok(obj) = serde_json::from_slice::<serde_json::Value>(body) {
-        if let Some(obj) = obj.as_object() {
-            for (k, v) in obj {
-                match v {
-                    serde_json::Value::String(s) => {
-                        map.insert(k.clone(), s.clone());
-                    }
-                    serde_json::Value::Number(n) => {
-                        map.insert(k.clone(), n.to_string());
-                    }
-                    serde_json::Value::Bool(b) => {
-                        map.insert(k.clone(), b.to_string());
-                    }
-                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-                        map.insert(k.clone(), v.to_string());
-                    }
-                    _ => {}
+    if let Ok(obj) = serde_json::from_slice::<serde_json::Value>(body)
+        && let Some(obj) = obj.as_object()
+    {
+        for (k, v) in obj {
+            match v {
+                serde_json::Value::String(s) => {
+                    map.insert(k.clone(), s.clone());
                 }
+                serde_json::Value::Number(n) => {
+                    map.insert(k.clone(), n.to_string());
+                }
+                serde_json::Value::Bool(b) => {
+                    map.insert(k.clone(), b.to_string());
+                }
+                serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                    map.insert(k.clone(), v.to_string());
+                }
+                _ => {}
             }
         }
     }
@@ -608,10 +607,10 @@ fn parse_address_list(value: &str) -> Vec<String> {
                 return None;
             }
             // Strip "Display Name <email>" format.
-            if let Some(start) = addr.find('<') {
-                if let Some(end) = addr.find('>') {
-                    return Some(addr[start + 1..end].trim().to_lowercase());
-                }
+            if let Some(start) = addr.find('<')
+                && let Some(end) = addr.find('>')
+            {
+                return Some(addr[start + 1..end].trim().to_lowercase());
             }
             Some(addr.to_lowercase())
         })

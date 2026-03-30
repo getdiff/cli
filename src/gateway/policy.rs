@@ -132,10 +132,10 @@ impl PolicyEvaluator {
         }
 
         // 7. Parameter constraints.
-        if !params.is_empty() {
-            if let Some(d) = self.check_parameter_constraints(params) {
-                return d;
-            }
+        if !params.is_empty()
+            && let Some(d) = self.check_parameter_constraints(params)
+        {
+            return d;
         }
 
         // 8. Default: allow.
@@ -151,91 +151,84 @@ impl PolicyEvaluator {
         params: &HashMap<String, serde_json::Value>,
     ) -> Option<Decision> {
         // Check max_amount_cents.
-        if let Some(max_amount) = self.config.max_amount_cents {
-            if let Some(amount) = get_int_param(params, "amount") {
-                if amount > max_amount {
-                    return Some(Decision {
-                        allowed: false,
-                        reason: format!(
-                            "amount {} exceeds max_amount_cents {}",
-                            amount, max_amount
-                        ),
-                        matched_rule: "max_amount_cents".to_string(),
-                    });
-                }
-            }
+        if let Some(max_amount) = self.config.max_amount_cents
+            && let Some(amount) = get_int_param(params, "amount")
+            && amount > max_amount
+        {
+            return Some(Decision {
+                allowed: false,
+                reason: format!("amount {} exceeds max_amount_cents {}", amount, max_amount),
+                matched_rule: "max_amount_cents".to_string(),
+            });
         }
 
         // Check allowed_currencies.
-        if !self.config.allowed_currencies.is_empty() {
-            if let Some(currency) = params.get("currency").and_then(|v| v.as_str()) {
-                let found = self
-                    .config
-                    .allowed_currencies
-                    .iter()
-                    .any(|c| c.eq_ignore_ascii_case(currency));
-                if !found {
-                    return Some(Decision {
-                        allowed: false,
-                        reason: format!("currency {} is not in allowed_currencies", currency),
-                        matched_rule: "allowed_currencies".to_string(),
-                    });
-                }
+        if !self.config.allowed_currencies.is_empty()
+            && let Some(currency) = params.get("currency").and_then(|v| v.as_str())
+        {
+            let found = self
+                .config
+                .allowed_currencies
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(currency));
+            if !found {
+                return Some(Decision {
+                    allowed: false,
+                    reason: format!("currency {} is not in allowed_currencies", currency),
+                    matched_rule: "allowed_currencies".to_string(),
+                });
             }
         }
 
         // Check recipients (for email providers).
-        if let Some(recipients) = get_string_slice_param(params, "recipients") {
-            if !recipients.is_empty() {
-                // Check max_recipients_per_message.
-                if let Some(max_recip) = self.config.max_recipients_per_message {
-                    if recipients.len() > max_recip {
+        if let Some(recipients) = get_string_slice_param(params, "recipients")
+            && !recipients.is_empty()
+        {
+            // Check max_recipients_per_message.
+            if let Some(max_recip) = self.config.max_recipients_per_message
+                && recipients.len() > max_recip
+            {
+                return Some(Decision {
+                    allowed: false,
+                    reason: format!(
+                        "recipient count {} exceeds max_recipients_per_message {}",
+                        recipients.len(),
+                        max_recip
+                    ),
+                    matched_rule: "max_recipients_per_message".to_string(),
+                });
+            }
+
+            // Check blocked_recipients.
+            for r in &recipients {
+                for pattern in &self.config.blocked_recipients {
+                    if match_glob(pattern, r) {
                         return Some(Decision {
                             allowed: false,
-                            reason: format!(
-                                "recipient count {} exceeds max_recipients_per_message {}",
-                                recipients.len(),
-                                max_recip
-                            ),
-                            matched_rule: "max_recipients_per_message".to_string(),
+                            reason: format!("recipient {} matches blocked pattern {}", r, pattern),
+                            matched_rule: format!("blocked_recipients: {}", pattern),
                         });
                     }
                 }
+            }
 
-                // Check blocked_recipients.
+            // Check allowed_recipients (if non-empty, all must match at least one).
+            if !self.config.allowed_recipients.is_empty() {
                 for r in &recipients {
-                    for pattern in &self.config.blocked_recipients {
-                        if match_glob(pattern, r) {
-                            return Some(Decision {
-                                allowed: false,
-                                reason: format!(
-                                    "recipient {} matches blocked pattern {}",
-                                    r, pattern
-                                ),
-                                matched_rule: format!("blocked_recipients: {}", pattern),
-                            });
-                        }
-                    }
-                }
-
-                // Check allowed_recipients (if non-empty, all must match at least one).
-                if !self.config.allowed_recipients.is_empty() {
-                    for r in &recipients {
-                        let matched = self
-                            .config
-                            .allowed_recipients
-                            .iter()
-                            .any(|pattern| match_glob(pattern, r));
-                        if !matched {
-                            return Some(Decision {
-                                allowed: false,
-                                reason: format!(
-                                    "recipient {} does not match any allowed_recipients pattern",
-                                    r
-                                ),
-                                matched_rule: "allowed_recipients".to_string(),
-                            });
-                        }
+                    let matched = self
+                        .config
+                        .allowed_recipients
+                        .iter()
+                        .any(|pattern| match_glob(pattern, r));
+                    if !matched {
+                        return Some(Decision {
+                            allowed: false,
+                            reason: format!(
+                                "recipient {} does not match any allowed_recipients pattern",
+                                r
+                            ),
+                            matched_rule: "allowed_recipients".to_string(),
+                        });
                     }
                 }
             }

@@ -144,22 +144,22 @@ fn detect_credential(headers: &HashMap<String, String>, raw_query: &str) -> (Str
 
     // Check common API key headers.
     for hdr in &["X-API-Key", "Api-Key", "X-Auth-Token"] {
-        if let Some(v) = get_header_case_insensitive(headers, hdr) {
-            if !v.is_empty() {
-                return ("api_key_header".to_string(), v);
-            }
+        if let Some(v) = get_header_case_insensitive(headers, hdr)
+            && !v.is_empty()
+        {
+            return ("api_key_header".to_string(), v);
         }
     }
 
     // Check query parameters.
-    if !raw_query.is_empty() {
-        if let Ok(params) = serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query) {
-            for key in &["api_key", "key", "token", "access_token"] {
-                if let Some((_, v)) = params.iter().find(|(k, _)| k == key) {
-                    if !v.is_empty() {
-                        return ("api_key_query".to_string(), v.clone());
-                    }
-                }
+    if !raw_query.is_empty()
+        && let Ok(params) = serde_urlencoded::from_str::<Vec<(String, String)>>(raw_query)
+    {
+        for key in &["api_key", "key", "token", "access_token"] {
+            if let Some((_, v)) = params.iter().find(|(k, _)| k == key)
+                && !v.is_empty()
+            {
+                return ("api_key_query".to_string(), v.clone());
             }
         }
     }

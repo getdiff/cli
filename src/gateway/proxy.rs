@@ -221,20 +221,22 @@ async fn handle_proxy_request(
         let entry = match providers.get(&provider_name) {
             Some(e) => e,
             None => {
-                log_audit_event(
-                    &state,
+                log_audit(AuditEntry {
+                    state: &state,
                     start,
-                    &provider_name,
-                    "unknown",
-                    method.as_str(),
-                    &sub_path,
-                    "denied",
-                    "unknown provider",
-                    404,
-                    false,
-                    false,
-                    "",
-                );
+                    provider: &provider_name,
+                    operation: "unknown",
+                    method: method.as_str(),
+                    path: &sub_path,
+                    decision: "denied",
+                    reason: "unknown provider",
+                    response_status: 404,
+                    learning_mode: false,
+                    would_block: false,
+                    would_reason: "",
+                    body_hash: None,
+                    parameters: None,
+                });
                 return error_json(
                     StatusCode::NOT_FOUND,
                     &format!("unknown provider: {}", provider_name),
@@ -322,22 +324,22 @@ async fn handle_proxy_request(
 
             let status_code = resp.as_ref().map(|r| r.status().as_u16()).unwrap_or(502) as i32;
 
-            log_audit_event_with_body(
-                &state,
+            log_audit(AuditEntry {
+                state: &state,
                 start,
-                &provider_name,
-                &parsed.operation,
-                method.as_str(),
-                &sub_path,
-                "allowed",
-                "learning mode: forwarded despite policy denial",
-                status_code,
-                true,
-                true,
-                &decision.reason,
-                body_hash.clone(),
-                params_json.clone(),
-            );
+                provider: &provider_name,
+                operation: &parsed.operation,
+                method: method.as_str(),
+                path: &sub_path,
+                decision: "allowed",
+                reason: "learning mode: forwarded despite policy denial",
+                response_status: status_code,
+                learning_mode: true,
+                would_block: true,
+                would_reason: &decision.reason,
+                body_hash: body_hash.clone(),
+                parameters: params_json.clone(),
+            });
 
             return match resp {
                 Ok(r) => r,
@@ -355,22 +357,22 @@ async fn handle_proxy_request(
             "denied",
         );
 
-        log_audit_event_with_body(
-            &state,
+        log_audit(AuditEntry {
+            state: &state,
             start,
-            &provider_name,
-            &parsed.operation,
-            method.as_str(),
-            &sub_path,
-            "denied",
-            &decision.reason,
-            403,
-            state.learning_mode,
-            false,
-            "",
-            body_hash.clone(),
-            params_json.clone(),
-        );
+            provider: &provider_name,
+            operation: &parsed.operation,
+            method: method.as_str(),
+            path: &sub_path,
+            decision: "denied",
+            reason: &decision.reason,
+            response_status: 403,
+            learning_mode: state.learning_mode,
+            would_block: false,
+            would_reason: "",
+            body_hash: body_hash.clone(),
+            parameters: params_json.clone(),
+        });
 
         return (
             StatusCode::FORBIDDEN,
@@ -409,22 +411,22 @@ async fn handle_proxy_request(
                 &sub_path,
                 "allowed",
             );
-            log_audit_event_with_body(
-                &state,
+            log_audit(AuditEntry {
+                state: &state,
                 start,
-                &provider_name,
-                &parsed.operation,
-                method.as_str(),
-                &sub_path,
-                "allowed",
-                &decision.reason,
-                status_code,
-                state.learning_mode,
-                false,
-                "",
+                provider: &provider_name,
+                operation: &parsed.operation,
+                method: method.as_str(),
+                path: &sub_path,
+                decision: "allowed",
+                reason: &decision.reason,
+                response_status: status_code,
+                learning_mode: state.learning_mode,
+                would_block: false,
+                would_reason: "",
                 body_hash,
-                params_json,
-            );
+                parameters: params_json,
+            });
             r
         }
         Err(msg) => {
@@ -436,22 +438,22 @@ async fn handle_proxy_request(
                 &sub_path,
                 "error",
             );
-            log_audit_event_with_body(
-                &state,
+            log_audit(AuditEntry {
+                state: &state,
                 start,
-                &provider_name,
-                &parsed.operation,
-                method.as_str(),
-                &sub_path,
-                "error",
-                "upstream error",
-                502,
-                state.learning_mode,
-                false,
-                "",
+                provider: &provider_name,
+                operation: &parsed.operation,
+                method: method.as_str(),
+                path: &sub_path,
+                decision: "error",
+                reason: "upstream error",
+                response_status: 502,
+                learning_mode: state.learning_mode,
+                would_block: false,
+                would_reason: "",
                 body_hash,
-                params_json,
-            );
+                parameters: params_json,
+            });
             error_json(StatusCode::BAD_GATEWAY, &msg)
         }
     }
@@ -670,87 +672,62 @@ fn error_json(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
 }
 
-/// Record an audit event.
-fn log_audit_event(
-    state: &GatewayState,
+/// Parameters for recording an audit event.
+struct AuditEntry<'a> {
+    state: &'a GatewayState,
     start: Instant,
-    provider: &str,
-    operation: &str,
-    method: &str,
-    path: &str,
-    decision: &str,
-    reason: &str,
+    provider: &'a str,
+    operation: &'a str,
+    method: &'a str,
+    path: &'a str,
+    decision: &'a str,
+    reason: &'a str,
     response_status: i32,
     learning_mode: bool,
     would_block: bool,
-    would_reason: &str,
-) {
-    log_audit_event_with_body(
-        state,
-        start,
-        provider,
-        operation,
-        method,
-        path,
-        decision,
-        reason,
-        response_status,
-        learning_mode,
-        would_block,
-        would_reason,
-        None,
-        None,
-    );
-}
-
-fn log_audit_event_with_body(
-    state: &GatewayState,
-    start: Instant,
-    provider: &str,
-    operation: &str,
-    method: &str,
-    path: &str,
-    decision: &str,
-    reason: &str,
-    response_status: i32,
-    learning_mode: bool,
-    would_block: bool,
-    would_reason: &str,
+    would_reason: &'a str,
     body_hash: Option<String>,
     parameters: Option<serde_json::Value>,
-) {
-    let latency_ms = start.elapsed().as_millis() as u64;
+}
+
+/// Record an audit event locally and ship to the control plane.
+fn log_audit(entry: AuditEntry<'_>) {
+    let latency_ms = entry.start.elapsed().as_millis() as u64;
     let audit_event = AuditEvent {
         timestamp: chrono::Utc::now().to_rfc3339(),
-        session_id: state.session_id.clone(),
-        provider: provider.to_string(),
-        operation: operation.to_string(),
-        method: method.to_string(),
-        path: path.to_string(),
-        decision: decision.to_string(),
-        reason: reason.to_string(),
-        response_status: Some(response_status as u16),
+        session_id: entry.state.session_id.clone(),
+        provider: entry.provider.to_string(),
+        operation: entry.operation.to_string(),
+        method: entry.method.to_string(),
+        path: entry.path.to_string(),
+        decision: entry.decision.to_string(),
+        reason: entry.reason.to_string(),
+        response_status: Some(entry.response_status as u16),
         latency_ms: Some(latency_ms),
-        learning_mode,
-        would_block,
-        would_reason: would_reason.to_string(),
+        learning_mode: entry.learning_mode,
+        would_block: entry.would_block,
+        would_reason: entry.would_reason.to_string(),
     };
 
     // Ship to control plane via event sender.
-    let intersection_rules = if state.active_intersection_names.is_empty() {
+    let intersection_rules = if entry.state.active_intersection_names.is_empty() {
         None
     } else {
-        Some(state.active_intersection_names.clone())
+        Some(entry.state.active_intersection_names.clone())
     };
-    let mut event =
-        events::Event::from_audit(&audit_event, body_hash, parameters, intersection_rules);
-    event.agent_type = state.agent_type.clone();
-    event.project_id = state.project_id.clone();
-    event.environment = state.environment.clone();
-    state.event_sender.send(event);
+    let mut event = events::Event::from_audit(
+        &audit_event,
+        entry.body_hash,
+        entry.parameters,
+        intersection_rules,
+    );
+    event.agent_type = entry.state.agent_type.clone();
+    event.project_id = entry.state.project_id.clone();
+    event.environment = entry.state.environment.clone();
+    entry.state.event_sender.send(event);
 
     // Log locally.
-    state.audit.log(audit_event);
+    entry.state.audit.log(audit_event);
 }
 
 // ---------------------------------------------------------------------------

@@ -267,15 +267,15 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
         match client.post(&url).json(&batch).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    if let Ok(body) = resp.json::<BatchResponse>().await {
-                        if body.rejected > 0 {
-                            eprintln!(
-                                "[gateway events] batch: {} accepted, {} rejected",
-                                body.accepted, body.rejected
-                            );
-                            for err in &body.errors {
-                                eprintln!("[gateway events]   event {}: {}", err.index, err.reason);
-                            }
+                    if let Ok(body) = resp.json::<BatchResponse>().await
+                        && body.rejected > 0
+                    {
+                        eprintln!(
+                            "[gateway events] batch: {} accepted, {} rejected",
+                            body.accepted, body.rejected
+                        );
+                        for err in &body.errors {
+                            eprintln!("[gateway events]   event {}: {}", err.index, err.reason);
                         }
                     }
                 } else {

@@ -14,6 +14,8 @@
 
 // These modules must be declared because Rust compiles each [[bin]] independently.
 // They reference the same source files as the main CLI binary.
+// The sidecar only uses proxy + config; other modules (mockapi, etc.) appear as dead code.
+#[allow(dead_code, clippy::collapsible_if)]
 mod gateway;
 
 #[tokio::main]

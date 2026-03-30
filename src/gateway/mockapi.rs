@@ -75,13 +75,13 @@ async fn handle_mock_request(
 
 /// Check that an `Authorization` header is present. Returns the auth value
 /// or an error response.
-fn require_auth(headers: &HeaderMap) -> Result<String, Response> {
+fn require_auth(headers: &HeaderMap) -> Result<String, Box<Response>> {
     match headers.get("authorization").and_then(|v| v.to_str().ok()) {
         Some(auth) if !auth.is_empty() => Ok(auth.to_string()),
-        _ => Err(json_response(
+        _ => Err(Box::new(json_response(
             StatusCode::UNAUTHORIZED,
             json!({ "error": "unauthorized", "message": "No Authorization header" }),
-        )),
+        ))),
     }
 }
 
@@ -107,7 +107,7 @@ async fn handle_github(
 ) -> Response {
     let auth = match require_auth(headers) {
         Ok(a) => a,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let path = full_path.trim_start_matches("/github");
@@ -259,7 +259,7 @@ async fn handle_stripe(
 ) -> Response {
     let auth = match require_auth(headers) {
         Ok(a) => a,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     let path = full_path.trim_start_matches("/stripe");
@@ -447,7 +447,7 @@ async fn handle_gmail(
 ) -> Response {
     let auth = match require_auth(headers) {
         Ok(a) => a,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
 
     // The Go code strips /gmail prefix, then matches against /gmail/v1/...
