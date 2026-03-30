@@ -1,0 +1,173 @@
+session:
+  id: "test-session-001"
+  learning_mode: false
+
+providers:
+  github:
+    upstream: "http://localhost:9999/github"
+    credential:
+      type: "bearer"
+      env_var: "GATEWAY_GITHUB_TOKEN"
+    adapter:
+      host: "api.github.com"
+      body_format: "json"
+      operations:
+        - match: { method: "GET", path: "/user" }
+          name: "get_user"
+        - match: { method: "GET", path: "/user/repos" }
+          name: "list_repos"
+        - match: { method: "GET", path: "/repos/*/*/issues" }
+          name: "list_issues"
+        - match: { method: "POST", path: "/repos/*/*/issues" }
+          name: "create_issue"
+        - match: { method: "GET", path: "/repos/*/*/pulls" }
+          name: "list_pull_requests"
+        - match: { method: "POST", path: "/repos/*/*/pulls" }
+          name: "create_pull_request"
+        - match: { method: "GET", path: "/repos/*/*" }
+          name: "get_repo"
+        - match: { method: "GET", path: "/repos/*" }
+          name: "get_repo"
+        - match: { method: "GET", path: "/rate_limit" }
+          name: "rate_limit"
+    policies:
+      allowed_methods: ["GET", "HEAD"]
+      blocked_methods: ["POST", "PUT", "DELETE", "PATCH"]
+      allowed_paths:
+        - "/user"
+        - "/user/repos"
+        - "/repos/*"
+        - "/repos/*/*"
+        - "/rate_limit"
+      blocked_paths:
+        - "/repos/*/*/issues"
+
+  stripe:
+    upstream: "http://localhost:9999/stripe"
+    credential:
+      type: "bearer"
+      env_var: "GATEWAY_STRIPE_KEY"
+    adapter:
+      host: "api.stripe.com"
+      body_format: "form"
+      operations:
+        - match: { method: "GET", path: "/v1/balance" }
+          name: "get_balance"
+        - match: { method: "POST", path: "/v1/charges" }
+          name: "create_charge"
+          extract:
+            - { param: "amount", field: "amount", type: "integer" }
+            - { param: "currency", field: "currency" }
+            - { param: "customer", field: "customer" }
+        - match: { method: "GET", path: "/v1/charges" }
+          name: "list_charges"
+        - match: { method: "GET", path: "/v1/charges/*" }
+          name: "get_charge"
+        - match: { method: "POST", path: "/v1/customers" }
+          name: "create_customer"
+          extract:
+            - { param: "email", field: "email" }
+            - { param: "name", field: "name" }
+        - match: { method: "GET", path: "/v1/customers" }
+          name: "list_customers"
+        - match: { method: "GET", path: "/v1/customers/*" }
+          name: "get_customer"
+        - match: { method: "POST", path: "/v1/customers/*" }
+          name: "update_customer"
+        - match: { method: "POST", path: "/v1/refunds" }
+          name: "create_refund"
+          extract:
+            - { param: "amount", field: "amount", type: "integer" }
+            - { param: "charge", field: "charge" }
+        - match: { method: "GET", path: "/v1/refunds" }
+          name: "list_refunds"
+        - match: { method: "POST", path: "/v1/subscriptions" }
+          name: "create_subscription"
+        - match: { method: "GET", path: "/v1/subscriptions" }
+          name: "list_subscriptions"
+        - match: { method: "DELETE", path: "/v1/subscriptions/*" }
+          name: "cancel_subscription"
+        - match: { method: "POST", path: "/v1/transfers" }
+          name: "create_transfer"
+          extract:
+            - { param: "amount", field: "amount", type: "integer" }
+            - { param: "currency", field: "currency" }
+    policies:
+      allowed_methods: ["GET", "POST"]
+      blocked_methods: ["DELETE"]
+      allowed_operations:
+        - "list_charges"
+        - "get_charge"
+        - "create_charge"
+        - "list_customers"
+        - "get_customer"
+        - "create_customer"
+      blocked_operations:
+        - "create_transfer"
+        - "get_balance"
+      max_amount_cents: 5000
+      allowed_currencies: ["usd"]
+
+  gmail:
+    upstream: "http://localhost:9999/gmail"
+    credential:
+      type: "bearer"
+      env_var: "GATEWAY_GMAIL_TOKEN"
+    adapter:
+      host: "gmail.googleapis.com"
+      body_format: "gmail_mime"
+      operations:
+        - match: { method: "POST", path: "/gmail/v1/users/me/messages/send" }
+          name: "send_email"
+        - match: { method: "GET", path: "/gmail/v1/users/me/messages" }
+          name: "list_messages"
+        - match: { method: "GET", path: "/gmail/v1/users/me/messages/*" }
+          name: "get_message"
+        - match: { method: "POST", path: "/gmail/v1/users/me/messages/*/modify" }
+          name: "modify_message"
+        - match: { method: "DELETE", path: "/gmail/v1/users/me/messages/*" }
+          name: "delete_message"
+        - match: { method: "GET", path: "/gmail/v1/users/me/labels" }
+          name: "list_labels"
+        - match: { method: "GET", path: "/gmail/v1/users/me/labels/*" }
+          name: "get_label"
+        - match: { method: "GET", path: "/gmail/v1/users/me/drafts" }
+          name: "list_drafts"
+        - match: { method: "POST", path: "/gmail/v1/users/me/drafts" }
+          name: "create_draft"
+        - match: { method: "POST", path: "/gmail/v1/users/me/drafts/send" }
+          name: "send_draft"
+    policies:
+      allowed_methods: ["GET", "POST"]
+      blocked_methods: ["DELETE"]
+      allowed_operations:
+        - "send_email"
+        - "list_messages"
+        - "get_message"
+        - "list_labels"
+      blocked_operations:
+        - "delete_message"
+        - "modify_message"
+      allowed_recipients:
+        - "*@acme.com"
+      max_recipients_per_message: 5
+
+intersection_policies:
+  - name: "prevent-mass-email"
+    description: "When agent has email + payment data, restrict email volume"
+    when:
+      all_of:
+        - provider: gmail
+        - provider: stripe
+    then:
+      gmail:
+        max_recipients_per_message: 3
+  - name: "payment-data-restriction"
+    description: "When agent has payment + email, lower charge caps"
+    when:
+      all_of:
+        - provider: stripe
+        - provider: gmail
+    then:
+      stripe:
+        max_amount_cents: 1000
