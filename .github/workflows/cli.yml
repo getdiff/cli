@@ -48,7 +48,7 @@ jobs:
             echo "Created tag ${TAG}"
             # Tags pushed by Actions don't trigger other workflows,
             # so explicitly dispatch the release workflow
-            gh workflow run release-cli.yml -f tag=${TAG}
+            GH_TOKEN=${{ secrets.GITHUB_TOKEN }} gh workflow run release-cli.yml -f tag=${TAG}
             echo "Dispatched release workflow for ${TAG}"
           fi
         env:
