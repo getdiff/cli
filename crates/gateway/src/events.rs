@@ -115,7 +115,11 @@ pub fn get_or_create_daemon_id() -> String {
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("diff");
+    get_or_create_daemon_id_in(&config_dir)
+}
 
+/// Implementation that accepts a directory, enabling tests to use a temp dir.
+fn get_or_create_daemon_id_in(config_dir: &std::path::Path) -> String {
     let id_path = config_dir.join(DAEMON_ID_FILE);
 
     // Try to read existing ID.
@@ -132,7 +136,7 @@ pub fn get_or_create_daemon_id() -> String {
     let daemon_id = format!("{}-{}", hostname, suffix);
 
     // Persist it.
-    let _ = std::fs::create_dir_all(&config_dir);
+    let _ = std::fs::create_dir_all(config_dir);
     let _ = std::fs::write(&id_path, &daemon_id);
 
     daemon_id
@@ -417,15 +421,17 @@ mod tests {
 
     #[test]
     fn test_daemon_id_generation() {
-        let id = get_or_create_daemon_id();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let id = get_or_create_daemon_id_in(tmp.path());
         assert!(!id.is_empty());
         assert!(id.contains('-'));
     }
 
     #[test]
     fn test_daemon_id_persistence() {
-        let id1 = get_or_create_daemon_id();
-        let id2 = get_or_create_daemon_id();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let id1 = get_or_create_daemon_id_in(tmp.path());
+        let id2 = get_or_create_daemon_id_in(tmp.path());
         assert_eq!(id1, id2);
     }
 
