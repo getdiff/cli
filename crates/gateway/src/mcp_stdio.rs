@@ -106,11 +106,11 @@ pub fn run_mcp_wrap(config: McpWrapConfig) -> io::Result<(usize, usize)> {
     let child_stdin = child
         .stdin
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture child stdin"))?;
+        .ok_or_else(|| io::Error::other("failed to capture child stdin"))?;
     let child_stdout = child
         .stdout
         .take()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "failed to capture child stdout"))?;
+        .ok_or_else(|| io::Error::other("failed to capture child stdout"))?;
 
     // Spawn a thread to relay MCP server stdout → our stdout.
     let relay_handle = std::thread::spawn(move || {

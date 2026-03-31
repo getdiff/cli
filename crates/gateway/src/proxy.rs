@@ -903,12 +903,11 @@ fn log_audit(entry: AuditEntry<'_>) {
     event.environment = entry.state.environment.clone();
 
     // Promote mcp_tool_name from parsed parameters to top-level event field.
-    if event.mcp_tool_name.is_none() {
-        if let Some(params) = &event.parameters {
-            if let Some(tool_name) = params.get("mcp_tool_name").and_then(|v| v.as_str()) {
-                event.mcp_tool_name = Some(tool_name.to_string());
-            }
-        }
+    if event.mcp_tool_name.is_none()
+        && let Some(params) = &event.parameters
+        && let Some(tool_name) = params.get("mcp_tool_name").and_then(|v| v.as_str())
+    {
+        event.mcp_tool_name = Some(tool_name.to_string());
     }
 
     entry.state.event_sender.send(event);
@@ -986,10 +985,10 @@ fn check_daily_limit(
 /// Read the API token from the environment or the Diff config file.
 /// Prefers `DIFF_API_KEY` env var, then falls back to `~/.config/diff/config.json`.
 fn read_api_token() -> String {
-    if let Ok(token) = std::env::var("DIFF_API_KEY") {
-        if !token.is_empty() {
-            return token;
-        }
+    if let Ok(token) = std::env::var("DIFF_API_KEY")
+        && !token.is_empty()
+    {
+        return token;
     }
 
     // Try reading from the config file (same path as auth.rs).
@@ -999,12 +998,11 @@ fn read_api_token() -> String {
         .join("diff")
         .join("config.json");
 
-    if let Ok(contents) = std::fs::read_to_string(&config_path) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
-            if let Some(token) = json.get("token").and_then(|v| v.as_str()) {
-                return token.to_string();
-            }
-        }
+    if let Ok(contents) = std::fs::read_to_string(&config_path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(token) = json.get("token").and_then(|v| v.as_str())
+    {
+        return token.to_string();
     }
 
     String::new()
