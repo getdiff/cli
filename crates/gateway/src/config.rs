@@ -20,12 +20,14 @@ pub struct SessionConfig {
     /// The platform groups behavior profiles by this field.
     #[serde(default)]
     pub agent_type: Option<String>,
-    /// Project identifier for scoping.
-    #[serde(default)]
-    pub project_id: Option<String>,
     /// Environment label: "laptop", "sandbox", "ci", "staging", "production".
     #[serde(default)]
     pub environment: Option<String>,
+    /// Deprecated: org_id is derived from the CLI token by the platform.
+    /// If set in YAML, a deprecation warning is logged at startup.
+    /// Also accepts the old name "project_id" from existing configs.
+    #[serde(default, alias = "project_id")]
+    pub org_id: Option<String>,
 }
 
 /// Defines a single upstream provider.
@@ -104,6 +106,121 @@ pub fn load(path: &str) -> anyhow::Result<GatewayConfig> {
     let content = std::fs::read_to_string(path)?;
     let config: GatewayConfig = serde_yaml::from_str(&content)?;
     Ok(config)
+}
+
+/// Built-in hostname → provider name mapping for the transparent forward proxy.
+/// Known hostnames get friendly provider names; unknown hostnames use the raw
+/// hostname as the provider name. All traffic is observed regardless.
+pub const KNOWN_HOSTS: &[(&str, &str)] = &[
+    ("api.github.com", "github"),
+    ("api.stripe.com", "stripe"),
+    ("gmail.googleapis.com", "gmail"),
+    ("slack.com", "slack"),
+    ("api.openai.com", "openai"),
+    ("api.anthropic.com", "anthropic"),
+];
+
+/// Resolve a hostname to a provider name. Returns the friendly name for known
+/// hosts, or the raw hostname for unknown hosts.
+pub fn provider_for_host(hostname: &str) -> String {
+    for &(host, provider) in KNOWN_HOSTS {
+        if hostname == host {
+            return provider.to_string();
+        }
+    }
+    // AWS Bedrock pattern: *.amazonaws.com containing "bedrock"
+    if hostname.ends_with(".amazonaws.com") && hostname.contains("bedrock") {
+        return "aws-bedrock".to_string();
+    }
+    hostname.to_string()
+}
+
+/// Built-in provider registry: name → (upstream URL, conventional env var).
+/// Used for backward-compatible path-prefix proxy mode.
+const BUILTIN_PROVIDERS: &[(&str, &str, &str)] = &[
+    ("github", "https://api.github.com", "GITHUB_TOKEN"),
+    ("stripe", "https://api.stripe.com", "STRIPE_API_KEY"),
+    ("gmail", "https://gmail.googleapis.com", "GMAIL_TOKEN"),
+    ("slack", "https://slack.com/api", "SLACK_TOKEN"),
+    ("openai", "https://api.openai.com", "OPENAI_API_KEY"),
+    (
+        "anthropic",
+        "https://api.anthropic.com",
+        "ANTHROPIC_API_KEY",
+    ),
+];
+
+/// Build a default `GatewayConfig` for zero-config startup.
+///
+/// All built-in providers are registered with empty (observe-only) policies,
+/// learning mode is enabled, and environment is auto-detected.
+pub fn default_config(agent_type: Option<String>, environment: Option<String>) -> GatewayConfig {
+    let env = environment.unwrap_or_else(|| {
+        if std::env::var("CI").unwrap_or_default() == "true" {
+            "ci".to_string()
+        } else {
+            "local".to_string()
+        }
+    });
+
+    let session_id = format!("gateway-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+
+    let mut providers = HashMap::new();
+    for &(name, upstream, env_var) in BUILTIN_PROVIDERS {
+        providers.insert(
+            name.to_string(),
+            ProviderConfig {
+                upstream: upstream.to_string(),
+                credential: CredentialConfig {
+                    cred_type: "bearer".to_string(),
+                    env_var: env_var.to_string(),
+                },
+                policies: PolicyConfig::default(),
+                adapter: None,
+            },
+        );
+    }
+
+    GatewayConfig {
+        session: SessionConfig {
+            id: session_id,
+            learning_mode: true,
+            agent_type: Some(agent_type.unwrap_or_else(|| "default".to_string())),
+            environment: Some(env),
+            org_id: None,
+        },
+        providers,
+        intersection_policies: Vec::new(),
+    }
+}
+
+/// Merge a YAML config on top of defaults. YAML values override defaults;
+/// additional providers in YAML are added; providers only in defaults are kept.
+pub fn merge_with_defaults(mut defaults: GatewayConfig, overrides: GatewayConfig) -> GatewayConfig {
+    // Session: override takes precedence for all fields.
+    defaults.session.id = overrides.session.id;
+    defaults.session.learning_mode = overrides.session.learning_mode;
+    if overrides.session.agent_type.is_some() {
+        defaults.session.agent_type = overrides.session.agent_type;
+    }
+    if overrides.session.environment.is_some() {
+        defaults.session.environment = overrides.session.environment;
+    }
+    if overrides.session.org_id.is_some() {
+        defaults.session.org_id = overrides.session.org_id;
+    }
+
+    // Providers: YAML providers override defaults by name; defaults are kept.
+    for (name, provider) in overrides.providers {
+        defaults.providers.insert(name, provider);
+    }
+
+    // Intersection policies come entirely from overrides if present.
+    if !overrides.intersection_policies.is_empty() {
+        defaults.intersection_policies = overrides.intersection_policies;
+    }
+
+    defaults
 }
 
 #[cfg(test)]
@@ -257,7 +374,8 @@ intersection_policies:
         assert_eq!(config.session.id, "demo-session-001");
         assert!(!config.session.learning_mode);
         assert_eq!(config.session.agent_type, Some("coding".to_string()));
-        assert_eq!(config.session.project_id, Some("proj-test".to_string()));
+        // project_id in YAML is aliased to org_id.
+        assert_eq!(config.session.org_id, Some("proj-test".to_string()));
         assert_eq!(config.session.environment, Some("sandbox".to_string()));
         assert_eq!(config.providers.len(), 3);
     }
@@ -337,5 +455,93 @@ intersection_policies:
         assert_eq!(second.name, "payment-data-restriction");
         let stripe_then = second.then.get("stripe").unwrap();
         assert_eq!(stripe_then.max_amount_cents, Some(1000));
+    }
+
+    #[test]
+    fn test_provider_for_host_known() {
+        assert_eq!(provider_for_host("api.github.com"), "github");
+        assert_eq!(provider_for_host("api.stripe.com"), "stripe");
+        assert_eq!(provider_for_host("api.openai.com"), "openai");
+        assert_eq!(provider_for_host("api.anthropic.com"), "anthropic");
+        assert_eq!(provider_for_host("gmail.googleapis.com"), "gmail");
+        assert_eq!(provider_for_host("slack.com"), "slack");
+    }
+
+    #[test]
+    fn test_provider_for_host_unknown() {
+        assert_eq!(
+            provider_for_host("custom-api.example.com"),
+            "custom-api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_provider_for_host_bedrock() {
+        assert_eq!(
+            provider_for_host("bedrock-runtime.us-east-1.amazonaws.com"),
+            "aws-bedrock"
+        );
+    }
+
+    #[test]
+    fn test_provider_for_host_non_bedrock_aws() {
+        assert_eq!(
+            provider_for_host("s3.us-east-1.amazonaws.com"),
+            "s3.us-east-1.amazonaws.com"
+        );
+    }
+
+    #[test]
+    fn test_default_config() {
+        // Pass explicit environment to avoid dependency on CI env var.
+        let config = default_config(None, Some("test".to_string()));
+        assert!(config.session.learning_mode);
+        assert_eq!(config.session.agent_type, Some("default".to_string()));
+        assert_eq!(config.session.environment, Some("test".to_string()));
+        assert_eq!(config.providers.len(), 6);
+        assert!(config.providers.contains_key("github"));
+        assert!(config.providers.contains_key("anthropic"));
+    }
+
+    #[test]
+    fn test_default_config_with_overrides() {
+        let config = default_config(Some("research".to_string()), Some("ci".to_string()));
+        assert_eq!(config.session.agent_type, Some("research".to_string()));
+        assert_eq!(config.session.environment, Some("ci".to_string()));
+    }
+
+    #[test]
+    fn test_merge_with_defaults() {
+        let defaults = default_config(None, None);
+        let yaml = r#"
+session:
+  id: "custom-session"
+  learning_mode: false
+  agent_type: "coding"
+providers:
+  github:
+    upstream: "https://github.enterprise.com/api/v3"
+    credential:
+      type: "bearer"
+      env_var: "GHE_TOKEN"
+    policies:
+      allowed_methods: ["GET"]
+"#;
+        let overrides: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let merged = merge_with_defaults(defaults, overrides);
+
+        // Session overrides.
+        assert_eq!(merged.session.id, "custom-session");
+        assert!(!merged.session.learning_mode);
+        assert_eq!(merged.session.agent_type, Some("coding".to_string()));
+
+        // GitHub was overridden with enterprise URL.
+        let github = merged.providers.get("github").unwrap();
+        assert_eq!(github.upstream, "https://github.enterprise.com/api/v3");
+        assert_eq!(github.credential.env_var, "GHE_TOKEN");
+
+        // Other default providers are still present.
+        assert!(merged.providers.contains_key("stripe"));
+        assert!(merged.providers.contains_key("openai"));
     }
 }

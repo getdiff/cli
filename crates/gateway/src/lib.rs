@@ -3,6 +3,7 @@ pub mod audit;
 pub mod config;
 pub mod counter;
 pub mod events;
+pub mod forward_proxy;
 pub mod harvester;
 pub mod intersection;
 pub mod mcp_stdio;

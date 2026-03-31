@@ -42,7 +42,7 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
+    pub org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +225,8 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
     let mut buffer: Vec<Event> = Vec::with_capacity(config.flush_count);
     // Deadline tracks the age of the oldest buffered event.
     let mut deadline: Option<tokio::time::Instant> = None;
+    // Tracks consecutive flush failures. After 2 failures, drop the failed events.
+    let mut consecutive_failures: u32 = 0;
 
     loop {
         // Determine how long to wait: if we have buffered events, wait until
@@ -274,12 +276,32 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
 
         // Flush if we hit the count threshold or the deadline fired with data.
         if buffer.len() >= config.flush_count || (deadline_fired && !buffer.is_empty()) {
+            let pre_len = buffer.len();
             flush(&client, &config, &mut buffer).await;
+            let post_len = buffer.len();
             deadline = None;
+
+            if post_len > 0 && post_len == pre_len {
+                // Nothing was sent — count as a failure.
+                consecutive_failures += 1;
+                if consecutive_failures >= 2 {
+                    eprintln!(
+                        "[gateway events] dropping {} events after 2 consecutive flush failures",
+                        buffer.len()
+                    );
+                    buffer.clear();
+                    consecutive_failures = 0;
+                }
+            } else {
+                consecutive_failures = 0;
+            }
         }
     }
 }
 
+/// Attempt to send buffered events to the control plane. Mutates `buffer`
+/// in-place — successfully acknowledged events are removed. The caller
+/// determines success by comparing buffer length before and after.
 async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &mut Vec<Event>) {
     if buffer.is_empty() {
         return;
@@ -383,7 +405,7 @@ impl Event {
                 Some(audit.operation.clone())
             },
             agent_type: None,
-            project_id: None,
+            org_id: None,
             task_id: None,
             environment: None,
             learning_mode: audit.learning_mode,
@@ -473,7 +495,7 @@ mod tests {
                 decision: "allowed".to_string(),
                 operation: Some("get_user".to_string()),
                 agent_type: None,
-                project_id: None,
+                org_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,
@@ -594,7 +616,7 @@ mod tests {
                 decision: "allowed".to_string(),
                 operation: None,
                 agent_type: None,
-                project_id: None,
+                org_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,

@@ -15,6 +15,10 @@ serde_urlencoded = "0.7"
 
 # HTTP server (proxy)
 axum = "0.8"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tower-service = "0.3"
 
 # HTTP client (upstream forwarding + event shipping)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -42,3 +46,4 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+tokio-test = "0.4"
