@@ -1,8 +1,8 @@
 [package]
 name = "getdiff"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
-description = "Diff CLI - capture and upload agentic coding sessions"
+description = "Diff CLI - capture and secure agentic coding sessions"
 license = "Apache-2.0"
 readme = "../../README.md"
 repository = "https://github.com/getdiff/cli"
