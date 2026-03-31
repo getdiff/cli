@@ -732,11 +732,7 @@ fn extract_graphql_operation_name(query: &str) -> Option<String> {
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
 
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }
 
 /// Extract the operation type from a GraphQL query string.
@@ -1540,7 +1536,10 @@ operations:
             Some("OnUpdate".to_string())
         );
         assert_eq!(extract_graphql_operation_name("{ viewer { login } }"), None);
-        assert_eq!(extract_graphql_operation_name("query { user { name } }"), None);
+        assert_eq!(
+            extract_graphql_operation_name("query { user { name } }"),
+            None
+        );
         assert_eq!(extract_graphql_operation_name(""), None);
     }
 

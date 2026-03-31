@@ -38,9 +38,7 @@ impl Registry {
     /// Creates a registry from provider configs. Each provider with an `adapter`
     /// block gets a config-driven generic adapter. Providers without an `adapter`
     /// block get no adapter (requests still route, but operations aren't parsed).
-    pub fn from_config(
-        providers: &HashMap<String, crate::config::ProviderConfig>,
-    ) -> Self {
+    pub fn from_config(providers: &HashMap<String, crate::config::ProviderConfig>) -> Self {
         let mut adapters: Vec<Box<dyn ProviderAdapter>> = Vec::new();
 
         for (name, cfg) in providers {
@@ -76,9 +74,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapter::generic::{
-        AdapterConfig, FieldExtraction, OperationDef, RequestMatcher,
-    };
+    use crate::adapter::generic::{AdapterConfig, FieldExtraction, OperationDef, RequestMatcher};
     use crate::config::{CredentialConfig, PolicyConfig, ProviderConfig};
 
     fn test_providers() -> HashMap<String, ProviderConfig> {

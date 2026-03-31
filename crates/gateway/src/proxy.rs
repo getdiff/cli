@@ -175,9 +175,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         let reg_daemon = daemon_id.clone();
         let reg_caps = capabilities.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                register_daemon(&reg_url, &reg_token, &reg_daemon, &reg_caps).await
-            {
+            if let Err(e) = register_daemon(&reg_url, &reg_token, &reg_daemon, &reg_caps).await {
                 eprintln!("[gateway] daemon registration failed: {}", e);
             }
         });

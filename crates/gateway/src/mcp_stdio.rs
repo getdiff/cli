@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::process::{Child, Command, Stdio};
 
-use crate::adapter::generic::{AdapterConfig, GenericAdapter};
 use crate::adapter::ProviderAdapter;
+use crate::adapter::generic::{AdapterConfig, GenericAdapter};
 use crate::config::PolicyConfig;
 use crate::policy::PolicyEvaluator;
 
@@ -59,7 +59,11 @@ pub fn evaluate_jsonrpc_line(
     line: &str,
     adapter: &GenericAdapter,
     evaluator: &PolicyEvaluator,
-) -> (String, crate::policy::Decision, HashMap<String, serde_json::Value>) {
+) -> (
+    String,
+    crate::policy::Decision,
+    HashMap<String, serde_json::Value>,
+) {
     let parsed = adapter.parse_request("POST", "/", line.as_bytes());
     let decision = evaluator.evaluate("POST", "/", &parsed.operation, &parsed.parameters);
     (parsed.operation, decision, parsed.parameters)
@@ -159,10 +163,7 @@ pub fn run_mcp_wrap(config: McpWrapConfig) -> io::Result<(usize, usize)> {
         } else {
             // Blocked — send error response back to agent.
             blocked += 1;
-            eprintln!(
-                "[mcp-wrap] blocked {} ({})",
-                operation, decision.reason
-            );
+            eprintln!("[mcp-wrap] blocked {} ({})", operation, decision.reason);
 
             if let Some(error_resp) = jsonrpc_error_response(&line, &decision.reason) {
                 let stdout = io::stdout();
@@ -287,10 +288,12 @@ mod tests {
         assert_eq!(parsed["jsonrpc"], "2.0");
         assert_eq!(parsed["id"], 42);
         assert_eq!(parsed["error"]["code"], -32600);
-        assert!(parsed["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("blocked by policy"));
+        assert!(
+            parsed["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("blocked by policy")
+        );
     }
 
     #[test]

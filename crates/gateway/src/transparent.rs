@@ -122,10 +122,7 @@ pub fn generate_iptables_init(
     script.push_str("iptables -t nat -N GATEWAY_OUTPUT 2>/dev/null || true\n\n");
 
     // Redirect rule: send traffic to the proxy port.
-    script.push_str(&format!(
-        "# Redirect to proxy port {}\n",
-        proxy_port
-    ));
+    script.push_str(&format!("# Redirect to proxy port {}\n", proxy_port));
     script.push_str(&format!(
         "iptables -t nat -A GATEWAY_REDIRECT -p tcp -j REDIRECT --to-port {}\n\n",
         proxy_port

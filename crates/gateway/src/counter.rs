@@ -61,10 +61,12 @@ impl CounterStore {
         let mut entries = self.entries.lock().unwrap();
         let now = Instant::now();
 
-        let entry = entries.entry(key.to_string()).or_insert_with(|| CounterEntry {
-            value: 0,
-            expires_at: now + self.default_ttl,
-        });
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(|| CounterEntry {
+                value: 0,
+                expires_at: now + self.default_ttl,
+            });
 
         // If expired, reset.
         if entry.expires_at <= now {
@@ -81,10 +83,12 @@ impl CounterStore {
         let mut entries = self.entries.lock().unwrap();
         let now = Instant::now();
 
-        let entry = entries.entry(key.to_string()).or_insert_with(|| CounterEntry {
-            value: 0,
-            expires_at: now + ttl,
-        });
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(|| CounterEntry {
+                value: 0,
+                expires_at: now + ttl,
+            });
 
         if entry.expires_at <= now {
             entry.value = 0;
