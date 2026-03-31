@@ -1,4 +1,4 @@
-use crate::gateway::policy::PolicyEvaluator;
+use crate::policy::PolicyEvaluator;
 use std::collections::HashMap;
 
 /// Holds the session identity and provider-specific state.
@@ -25,7 +25,7 @@ pub struct ProviderSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::config::PolicyConfig;
+    use crate::config::PolicyConfig;
 
     #[test]
     fn test_session_context_creation() {

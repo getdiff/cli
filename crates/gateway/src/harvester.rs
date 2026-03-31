@@ -35,6 +35,12 @@ pub struct Harvester {
     inner: Mutex<HashMap<String, ObservedCredential>>,
 }
 
+impl Default for Harvester {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Harvester {
     /// Creates a new credential harvester.
     pub fn new() -> Self {

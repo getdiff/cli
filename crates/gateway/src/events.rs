@@ -27,6 +27,8 @@ pub struct EventBatch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     // --- Required fields ---
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
     pub timestamp: String,
     pub session_id: String,
     pub provider: String,
@@ -64,6 +66,10 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_rule: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential_ttl: Option<u64>,
@@ -71,6 +77,13 @@ pub struct Event {
 
 fn is_false(v: &bool) -> bool {
     !v
+}
+
+/// Current schema version for events. Used in both individual events and batch envelopes.
+pub const SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    SCHEMA_VERSION
 }
 
 /// Server response for a batch submission.
@@ -102,7 +115,11 @@ pub fn get_or_create_daemon_id() -> String {
         .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("diff");
+    get_or_create_daemon_id_in(&config_dir)
+}
 
+/// Implementation that accepts a directory, enabling tests to use a temp dir.
+fn get_or_create_daemon_id_in(config_dir: &std::path::Path) -> String {
     let id_path = config_dir.join(DAEMON_ID_FILE);
 
     // Try to read existing ID.
@@ -119,7 +136,7 @@ pub fn get_or_create_daemon_id() -> String {
     let daemon_id = format!("{}-{}", hostname, suffix);
 
     // Persist it.
-    let _ = std::fs::create_dir_all(&config_dir);
+    let _ = std::fs::create_dir_all(config_dir);
     let _ = std::fs::write(&id_path, &daemon_id);
 
     daemon_id
@@ -162,6 +179,8 @@ impl EventSender {
 pub struct EventShipperConfig {
     /// Control plane URL (e.g. "http://localhost:9090").
     pub control_plane_url: String,
+    /// API token for authenticating with the control plane (Bearer token).
+    pub api_token: String,
     /// Persistent daemon ID.
     pub daemon_id: String,
     /// Flush after this many buffered events.
@@ -174,6 +193,7 @@ impl Default for EventShipperConfig {
     fn default() -> Self {
         Self {
             control_plane_url: String::new(),
+            api_token: String::new(),
             daemon_id: get_or_create_daemon_id(),
             flush_count: 100,
             flush_interval: std::time::Duration::from_secs(5),
@@ -281,12 +301,16 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
     let mut sent = 0usize;
     for chunk in buffer.chunks(1000) {
         let batch = EventBatch {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             daemon_id: config.daemon_id.clone(),
             events: chunk.to_vec(),
         };
 
-        match client.post(&url).json(&batch).send().await {
+        let mut req = client.post(&url).json(&batch);
+        if !config.api_token.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", config.api_token));
+        }
+        match req.send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
                     match resp.json::<BatchResponse>().await {
@@ -335,7 +359,7 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
 // Conversion from AuditEvent
 // ---------------------------------------------------------------------------
 
-use crate::gateway::audit::AuditEvent;
+use crate::audit::AuditEvent;
 
 impl Event {
     /// Convert from an internal `AuditEvent` plus additional context.
@@ -346,6 +370,7 @@ impl Event {
         intersection_rules: Option<Vec<String>>,
     ) -> Self {
         Self {
+            schema_version: SCHEMA_VERSION,
             timestamp: audit.timestamp.clone(),
             session_id: audit.session_id.clone(),
             provider: audit.provider.clone(),
@@ -378,6 +403,8 @@ impl Event {
             } else {
                 Some(audit.matched_rule.clone())
             },
+            response_status: audit.response_status,
+            latency_ms: audit.latency_ms,
             credential_id: None,
             credential_ttl: None,
         }
@@ -394,15 +421,17 @@ mod tests {
 
     #[test]
     fn test_daemon_id_generation() {
-        let id = get_or_create_daemon_id();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let id = get_or_create_daemon_id_in(tmp.path());
         assert!(!id.is_empty());
         assert!(id.contains('-'));
     }
 
     #[test]
     fn test_daemon_id_persistence() {
-        let id1 = get_or_create_daemon_id();
-        let id2 = get_or_create_daemon_id();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let id1 = get_or_create_daemon_id_in(tmp.path());
+        let id2 = get_or_create_daemon_id_in(tmp.path());
         assert_eq!(id1, id2);
     }
 
@@ -432,9 +461,10 @@ mod tests {
     #[test]
     fn test_event_batch_serialization() {
         let batch = EventBatch {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             daemon_id: "test-host-abc123".to_string(),
             events: vec![Event {
+                schema_version: SCHEMA_VERSION,
                 timestamp: "2026-03-30T14:22:01.123Z".to_string(),
                 session_id: "sess-a1b2c3".to_string(),
                 provider: "github".to_string(),
@@ -455,6 +485,8 @@ mod tests {
                 mcp_server: None,
                 intersection_rules: None,
                 policy_rule: None,
+                response_status: Some(200),
+                latency_ms: Some(42),
                 credential_id: None,
                 credential_ttl: None,
             }],
@@ -542,6 +574,7 @@ mod tests {
     async fn test_event_sender_does_not_block() {
         let config = EventShipperConfig {
             control_plane_url: String::new(), // No server — events silently drained
+            api_token: String::new(),
             daemon_id: "test-daemon".to_string(),
             flush_count: 10,
             flush_interval: std::time::Duration::from_millis(100),
@@ -552,6 +585,7 @@ mod tests {
         // Send 50 events quickly — should not block or panic.
         for i in 0..50 {
             sender.send(Event {
+                schema_version: SCHEMA_VERSION,
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 session_id: "test".to_string(),
                 provider: "github".to_string(),
@@ -572,6 +606,8 @@ mod tests {
                 mcp_server: None,
                 intersection_rules: None,
                 policy_rule: None,
+                response_status: None,
+                latency_ms: None,
                 credential_id: None,
                 credential_ttl: None,
             });

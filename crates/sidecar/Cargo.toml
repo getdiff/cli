@@ -1,0 +1,11 @@
+[package]
+name = "gateway-sidecar"
+version = "0.1.9"
+edition = "2024"
+description = "Gateway sidecar binary - minimal proxy for agent sandboxes"
+license = "Apache-2.0"
+repository = "https://github.com/getdiff/cli"
+
+[dependencies]
+getdiff-gateway = { path = "../gateway" }
+tokio = { version = "1", features = ["full"] }

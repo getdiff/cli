@@ -38,7 +38,7 @@ pub struct ProviderConfig {
     /// Optional config-driven adapter definition. When present, a GenericAdapter
     /// is created instead of using the built-in hard-coded adapter.
     #[serde(default)]
-    pub adapter: Option<crate::gateway::adapter::generic::AdapterConfig>,
+    pub adapter: Option<crate::adapter::generic::AdapterConfig>,
 }
 
 /// Describes how to obtain credentials for a provider.
@@ -114,6 +114,9 @@ mod tests {
 session:
   id: "demo-session-001"
   learning_mode: false
+  agent_type: "coding"
+  project_id: "proj-test"
+  environment: "sandbox"
 
 providers:
   github:
@@ -121,6 +124,20 @@ providers:
     credential:
       type: "bearer"
       env_var: "GATEWAY_GITHUB_TOKEN"
+    adapter:
+      host: "api.github.com"
+      body_format: "json"
+      operations:
+        - match: { method: "GET", path: "/user" }
+          name: "get_user"
+        - match: { method: "GET", path: "/user/repos" }
+          name: "list_repos"
+        - match: { method: "GET", path: "/repos/*/*" }
+          name: "get_repo"
+        - match: { method: "GET", path: "/repos/*/*/issues" }
+          name: "list_issues"
+        - match: { method: "GET", path: "/rate_limit" }
+          name: "rate_limit"
     policies:
       allowed_methods: ["GET", "HEAD"]
       allowed_paths:
@@ -138,6 +155,29 @@ providers:
     credential:
       type: "bearer"
       env_var: "GATEWAY_STRIPE_KEY"
+    adapter:
+      host: "api.stripe.com"
+      body_format: "form"
+      operations:
+        - match: { method: "POST", path: "/v1/charges" }
+          name: "create_charge"
+          extract:
+            - { param: "amount", field: "amount", type: "integer" }
+            - { param: "currency", field: "currency" }
+        - match: { method: "GET", path: "/v1/charges" }
+          name: "list_charges"
+        - match: { method: "GET", path: "/v1/charges/*" }
+          name: "get_charge"
+        - match: { method: "POST", path: "/v1/customers" }
+          name: "create_customer"
+        - match: { method: "GET", path: "/v1/customers" }
+          name: "list_customers"
+        - match: { method: "GET", path: "/v1/customers/*" }
+          name: "get_customer"
+        - match: { method: "POST", path: "/v1/transfers" }
+          name: "create_transfer"
+        - match: { method: "GET", path: "/v1/balance" }
+          name: "get_balance"
     policies:
       allowed_methods: ["GET", "POST"]
       blocked_methods: ["DELETE"]
@@ -159,6 +199,22 @@ providers:
     credential:
       type: "bearer"
       env_var: "GATEWAY_GMAIL_TOKEN"
+    adapter:
+      host: "gmail.googleapis.com"
+      body_format: "gmail_mime"
+      operations:
+        - match: { method: "POST", path: "/gmail/v1/users/me/messages/send" }
+          name: "send_email"
+        - match: { method: "GET", path: "/gmail/v1/users/me/messages" }
+          name: "list_messages"
+        - match: { method: "GET", path: "/gmail/v1/users/me/messages/*" }
+          name: "get_message"
+        - match: { method: "GET", path: "/gmail/v1/users/me/labels" }
+          name: "list_labels"
+        - match: { method: "DELETE", path: "/gmail/v1/users/me/messages/*" }
+          name: "delete_message"
+        - match: { method: "POST", path: "/gmail/v1/users/me/messages/*/modify" }
+          name: "modify_message"
     policies:
       allowed_methods: ["GET", "POST"]
       blocked_methods: ["DELETE"]
@@ -200,6 +256,9 @@ intersection_policies:
         let config: GatewayConfig = serde_yaml::from_str(TEST_YAML).unwrap();
         assert_eq!(config.session.id, "demo-session-001");
         assert!(!config.session.learning_mode);
+        assert_eq!(config.session.agent_type, Some("coding".to_string()));
+        assert_eq!(config.session.project_id, Some("proj-test".to_string()));
+        assert_eq!(config.session.environment, Some("sandbox".to_string()));
         assert_eq!(config.providers.len(), 3);
     }
 
@@ -222,6 +281,11 @@ intersection_policies:
                 .blocked_paths
                 .contains(&"/repos/*/*/issues".to_string())
         );
+        // Verify adapter block is present.
+        let adapter = github.adapter.as_ref().unwrap();
+        assert_eq!(adapter.host, "api.github.com");
+        assert_eq!(adapter.body_format, "json");
+        assert!(!adapter.operations.is_empty());
     }
 
     #[test]
@@ -237,6 +301,10 @@ intersection_policies:
                 .blocked_operations
                 .contains(&"create_transfer".to_string())
         );
+        let adapter = stripe.adapter.as_ref().unwrap();
+        assert_eq!(adapter.host, "api.stripe.com");
+        assert_eq!(adapter.body_format, "form");
+        assert!(adapter.operations.len() >= 6);
     }
 
     #[test]
@@ -246,6 +314,10 @@ intersection_policies:
         assert_eq!(gmail.upstream, "https://gmail.googleapis.com");
         assert_eq!(gmail.policies.max_recipients_per_message, Some(5));
         assert_eq!(gmail.policies.allowed_recipients, vec!["*@acme.com"]);
+        let adapter = gmail.adapter.as_ref().unwrap();
+        assert_eq!(adapter.host, "gmail.googleapis.com");
+        assert_eq!(adapter.body_format, "gmail_mime");
+        assert!(adapter.operations.len() >= 4);
     }
 
     #[test]

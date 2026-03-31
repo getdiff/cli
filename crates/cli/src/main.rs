@@ -4,11 +4,12 @@ mod auth;
 mod config_history;
 mod config_snapshot;
 mod detectors;
-mod gateway;
 mod parser;
 mod redact;
 mod types;
 mod watcher;
+
+use getdiff_gateway as gateway;
 
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};

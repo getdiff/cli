@@ -5,7 +5,7 @@
 //! API endpoints for audit, harvesting, profiling, and session management.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use axum::body::Bytes;
@@ -19,14 +19,15 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::gateway::adapter::{ParsedOperation, Registry};
-use crate::gateway::audit::{AuditEvent, AuditFilter, AuditLogger};
-use crate::gateway::config::{GatewayConfig, PolicyConfig};
-use crate::gateway::events::{self, EventSender, EventShipperConfig};
-use crate::gateway::harvester::Harvester;
-use crate::gateway::intersection::{compute_intersections, merge_intersections, rules_from_config};
-use crate::gateway::policy::PolicyEvaluator;
-use crate::gateway::profiler::Profiler;
+use crate::adapter::{ParsedOperation, Registry};
+use crate::audit::{AuditEvent, AuditFilter, AuditLogger};
+use crate::config::{GatewayConfig, PolicyConfig};
+use crate::counter::CounterStore;
+use crate::events::{self, EventSender, EventShipperConfig};
+use crate::harvester::Harvester;
+use crate::intersection::{compute_intersections, merge_intersections, rules_from_config};
+use crate::policy::PolicyEvaluator;
+use crate::profiler::Profiler;
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -55,7 +56,12 @@ pub struct GatewayState {
     /// Environment label (from config).
     pub environment: Option<String>,
     /// Per-provider configuration: upstream URL, credential, and policy evaluator.
-    pub providers: Mutex<HashMap<String, ProviderEntry>>,
+    /// Uses `RwLock` so proxy reads don't block each other — only session
+    /// add/remove takes a write lock.
+    pub providers: RwLock<HashMap<String, ProviderEntry>>,
+    /// Tracks which providers were added by each dynamic session (session_id → provider names).
+    /// Providers from the static YAML config are stored under the key `"__static__"`.
+    pub session_providers: Mutex<HashMap<String, Vec<String>>>,
     /// Registry of provider adapters for parsing requests.
     pub adapter_registry: Registry,
     /// Structured audit logger.
@@ -71,7 +77,9 @@ pub struct GatewayState {
     /// Names of active intersection rules (included in shipped events).
     pub active_intersection_names: Vec<String>,
     /// Intersection rules from config, used to recompute when providers change.
-    pub intersection_rules: Vec<crate::gateway::intersection::IntersectionRule>,
+    pub intersection_rules: Vec<crate::intersection::IntersectionRule>,
+    /// In-memory counter store for aggregate policy limits (e.g. daily_limit_cents).
+    pub counter_store: CounterStore,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,7 +88,7 @@ pub struct GatewayState {
 
 /// Load a config file and run the proxy. Called from the CLI entry point.
 pub async fn run_proxy_from_file(config_path: &str, port: u16) -> anyhow::Result<()> {
-    let config = crate::gateway::config::load(config_path)?;
+    let config = crate::config::load(config_path)?;
     run_proxy(config, port).await
 }
 
@@ -136,12 +144,42 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         .map(|ai| ai.rule.name.clone())
         .collect();
 
+    // Track which providers came from static config.
+    let static_provider_names: Vec<String> = providers.keys().cloned().collect();
+    let mut session_providers_map = HashMap::new();
+    session_providers_map.insert("__static__".to_string(), static_provider_names);
+
     // Spawn the background event shipper.
     let control_plane_url = std::env::var("GATEWAY_CONTROL_PLANE_URL").unwrap_or_default();
+    let api_token = read_api_token();
+
+    if !control_plane_url.is_empty() && api_token.is_empty() {
+        eprintln!(
+            "[gateway] WARNING: GATEWAY_CONTROL_PLANE_URL is set but no API token found. \
+             Event shipping will fail with 401. Run `getdiff login` or set DIFF_API_KEY."
+        );
+    }
+
     let event_sender = events::spawn_event_shipper(EventShipperConfig {
-        control_plane_url,
+        control_plane_url: control_plane_url.clone(),
+        api_token: api_token.clone(),
         ..Default::default()
     });
+
+    // Register with the control plane.
+    let daemon_id = events::get_or_create_daemon_id();
+    if !control_plane_url.is_empty() && !api_token.is_empty() {
+        let capabilities: Vec<String> = providers.keys().cloned().collect();
+        let reg_url = control_plane_url.clone();
+        let reg_token = api_token.clone();
+        let reg_daemon = daemon_id.clone();
+        let reg_caps = capabilities.clone();
+        tokio::spawn(async move {
+            if let Err(e) = register_daemon(&reg_url, &reg_token, &reg_daemon, &reg_caps).await {
+                eprintln!("[gateway] daemon registration failed: {}", e);
+            }
+        });
+    }
 
     let state = Arc::new(GatewayState {
         session_id: config.session.id.clone(),
@@ -149,7 +187,8 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         agent_type: config.session.agent_type.clone(),
         project_id: config.session.project_id.clone(),
         environment: config.session.environment.clone(),
-        providers: Mutex::new(providers),
+        providers: RwLock::new(providers),
+        session_providers: Mutex::new(session_providers_map),
         adapter_registry,
         audit: AuditLogger::new(Box::new(std::io::stderr())),
         harvester: Harvester::new(),
@@ -160,6 +199,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         event_sender,
         active_intersection_names,
         intersection_rules,
+        counter_store: CounterStore::daily(),
     });
 
     let app = build_router(state);
@@ -251,9 +291,22 @@ async fn handle_proxy_request(
         return error_json(StatusCode::NOT_FOUND, "no provider specified");
     }
 
-    // 2. Look up provider entry.
+    // 2. Parse the request through the adapter (outside lock — adapters are immutable).
+    let adapter = state.adapter_registry.find_by_name(&provider_name);
+    let parsed = match &adapter {
+        Some(a) => a.parse_request(method.as_str(), &sub_path, &body),
+        None => ParsedOperation {
+            provider: provider_name.clone(),
+            operation: "unknown".into(),
+            method: method.to_string(),
+            path: sub_path.clone(),
+            parameters: HashMap::new(),
+        },
+    };
+
+    // 3. Look up provider entry (read lock — concurrent reads don't block).
     let (upstream, credential, decision) = {
-        let providers = state.providers.lock().unwrap();
+        let providers = state.providers.read().unwrap();
         let entry = match providers.get(&provider_name) {
             Some(e) => e,
             None => {
@@ -281,19 +334,6 @@ async fn handle_proxy_request(
             }
         };
 
-        // 3. Parse the request through the adapter.
-        let adapter = state.adapter_registry.find_by_name(&provider_name);
-        let parsed = match &adapter {
-            Some(a) => a.parse_request(method.as_str(), &sub_path, &body),
-            None => ParsedOperation {
-                provider: provider_name.clone(),
-                operation: "unknown".into(),
-                method: method.to_string(),
-                path: sub_path.clone(),
-                parameters: HashMap::new(),
-            },
-        };
-
         // 4. Evaluate policy.
         let decision = entry.evaluator.evaluate(
             method.as_str(),
@@ -305,20 +345,7 @@ async fn handle_proxy_request(
         (entry.upstream.clone(), entry.credential.clone(), decision)
     };
 
-    // 5. Re-parse for harvester/profiler (outside lock).
-    let adapter = state.adapter_registry.find_by_name(&provider_name);
-    let parsed = match &adapter {
-        Some(a) => a.parse_request(method.as_str(), &sub_path, &body),
-        None => ParsedOperation {
-            provider: provider_name.clone(),
-            operation: "unknown".into(),
-            method: method.to_string(),
-            path: sub_path.clone(),
-            parameters: HashMap::new(),
-        },
-    };
-
-    // 6. Compute body hash and parameters for event shipping.
+    // 5. Compute body hash and parameters for event shipping.
     let body_hash = events::hash_request_body(&body);
     let params_json = if parsed.parameters.is_empty() {
         None
@@ -334,6 +361,9 @@ async fn handle_proxy_request(
     state
         .harvester
         .observe(&provider_name, &header_map, uri.query().unwrap_or(""));
+
+    // 7b. Check aggregate counter limits (e.g. daily_limit_cents).
+    let decision = check_daily_limit(&state, &provider_name, &parsed.parameters, decision);
 
     // 8. Handle policy decision.
     if !decision.allowed {
@@ -672,15 +702,17 @@ async fn handle_add_session(
 ) -> impl IntoResponse {
     // Register each provider from the session into the provider map.
     if let Some(session_providers) = req.providers {
-        let mut providers = state.providers.lock().unwrap();
+        let mut providers = state.providers.write().unwrap();
 
         // Collect the raw policies for the new providers.
         let mut new_policies: HashMap<String, PolicyConfig> = HashMap::new();
         let mut new_entries: HashMap<String, (String, String)> = HashMap::new();
+        let mut added_names: Vec<String> = Vec::new();
 
         for (name, pcfg) in session_providers {
             let policy = pcfg.policy.unwrap_or_default();
             new_policies.insert(name.clone(), policy);
+            added_names.push(name.clone());
             new_entries.insert(
                 name,
                 (
@@ -734,6 +766,10 @@ async fn handle_add_session(
                 };
             }
         }
+
+        // Track which providers belong to this session.
+        let mut sp = state.session_providers.lock().unwrap();
+        sp.insert(req.session_id.clone(), added_names);
     }
 
     (
@@ -742,15 +778,64 @@ async fn handle_add_session(
     )
 }
 
-/// DELETE /internal/sessions/{id} — remove a session.
+/// DELETE /internal/sessions/{id} — remove a session and its providers.
+///
+/// Removes all providers that were added by the given session, then
+/// recomputes intersection policies across the remaining provider set.
+/// Providers from the static YAML config (tracked under `"__static__"`)
+/// are never removed.
 async fn handle_remove_session(
-    State(_state): State<Arc<GatewayState>>,
+    State(state): State<Arc<GatewayState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // In a full implementation we would track which providers belong to which
-    // session and remove them. For now, acknowledge the removal.
-    let _ = &id;
-    (StatusCode::OK, Json(json!({ "status": "ok" })))
+    // Look up which providers belong to this session.
+    let provider_names = {
+        let mut sp = state.session_providers.lock().unwrap();
+        sp.remove(&id).unwrap_or_default()
+    };
+
+    if provider_names.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "status": "not_found", "session_id": id })),
+        );
+    }
+
+    // Remove the session's providers and recompute intersections.
+    {
+        let mut providers = state.providers.write().unwrap();
+
+        for name in &provider_names {
+            providers.remove(name);
+        }
+
+        // Recompute intersection policies for remaining providers.
+        let mut all_policies: HashMap<String, PolicyConfig> = HashMap::new();
+        for (name, entry) in providers.iter() {
+            all_policies.insert(name.clone(), entry.evaluator.config().clone());
+        }
+
+        let remaining_names: Vec<String> = all_policies.keys().cloned().collect();
+        let active_intersections =
+            compute_intersections(&remaining_names, &state.intersection_rules);
+        let merged = merge_intersections(&all_policies, &active_intersections);
+
+        // Update existing providers with recomputed policies.
+        for (name, entry) in providers.iter_mut() {
+            if let Some(merged_policy) = merged.get(name) {
+                *entry = ProviderEntry {
+                    upstream: entry.upstream.clone(),
+                    credential: entry.credential.clone(),
+                    evaluator: PolicyEvaluator::new(merged_policy.clone()),
+                };
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({ "status": "ok", "session_id": id, "removed_providers": provider_names })),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -816,10 +901,163 @@ fn log_audit(entry: AuditEntry<'_>) {
     event.agent_type = entry.state.agent_type.clone();
     event.project_id = entry.state.project_id.clone();
     event.environment = entry.state.environment.clone();
+
+    // Promote mcp_tool_name from parsed parameters to top-level event field.
+    if event.mcp_tool_name.is_none()
+        && let Some(params) = &event.parameters
+        && let Some(tool_name) = params.get("mcp_tool_name").and_then(|v| v.as_str())
+    {
+        event.mcp_tool_name = Some(tool_name.to_string());
+    }
+
     entry.state.event_sender.send(event);
 
     // Log locally.
     entry.state.audit.log(audit_event);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate counter checks
+// ---------------------------------------------------------------------------
+
+/// If the provider has `daily_limit_cents` configured and the request contains
+/// an `amount` parameter, check whether the daily aggregate would exceed the
+/// limit. If so, override the decision to deny. On allowed requests, increment
+/// the counter.
+fn check_daily_limit(
+    state: &GatewayState,
+    provider: &str,
+    params: &HashMap<String, serde_json::Value>,
+    decision: crate::policy::Decision,
+) -> crate::policy::Decision {
+    // Only check if the request is currently allowed.
+    if !decision.allowed {
+        return decision;
+    }
+
+    // Look up the daily limit for this provider.
+    let daily_limit = {
+        let providers = state.providers.read().unwrap();
+        providers
+            .get(provider)
+            .and_then(|e| e.evaluator.config().daily_limit_cents)
+    };
+
+    let daily_limit = match daily_limit {
+        Some(limit) => limit,
+        None => return decision, // No daily limit configured.
+    };
+
+    // Extract the amount from parameters.
+    let amount = params
+        .get("amount")
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)));
+
+    let amount = match amount {
+        Some(a) => a,
+        None => return decision, // No amount in this request.
+    };
+
+    let counter_key = CounterStore::key(&state.session_id, provider, "daily_spend_cents");
+
+    // Atomic check-and-increment to avoid TOCTOU race.
+    match state
+        .counter_store
+        .increment_if_under(&counter_key, amount, daily_limit)
+    {
+        Ok(_) => decision,
+        Err(current) => crate::policy::Decision {
+            allowed: false,
+            reason: format!(
+                "daily spend {} + {} would exceed daily_limit_cents {}",
+                current, amount, daily_limit
+            ),
+            matched_rule: "daily_limit_cents".to_string(),
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// API token resolution
+// ---------------------------------------------------------------------------
+
+/// Read the API token from the environment or the Diff config file.
+/// Prefers `DIFF_API_KEY` env var, then falls back to `~/.config/diff/config.json`.
+fn read_api_token() -> String {
+    if let Ok(token) = std::env::var("DIFF_API_KEY")
+        && !token.is_empty()
+    {
+        return token;
+    }
+
+    // Try reading from the config file (same path as auth.rs).
+    let config_path = dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("diff")
+        .join("config.json");
+
+    if let Ok(contents) = std::fs::read_to_string(&config_path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+        && let Some(token) = json.get("token").and_then(|v| v.as_str())
+    {
+        return token.to_string();
+    }
+
+    String::new()
+}
+
+// ---------------------------------------------------------------------------
+// Daemon registration
+// ---------------------------------------------------------------------------
+
+/// Register this daemon with the control plane on startup.
+/// Sends hostname, version, daemon_id, and provider capabilities.
+async fn register_daemon(
+    control_plane_url: &str,
+    api_token: &str,
+    daemon_id: &str,
+    capabilities: &[String],
+) -> Result<(), String> {
+    let url = format!(
+        "{}/v1/daemons/register",
+        control_plane_url.trim_end_matches('/')
+    );
+
+    let hostname = gethostname::gethostname().to_string_lossy().to_string();
+    let version = env!("CARGO_PKG_VERSION");
+
+    let payload = json!({
+        "daemon_id": daemon_id,
+        "hostname": hostname,
+        "version": version,
+        "capabilities": capabilities,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("http client error: {}", e))?;
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("registration request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("registration failed: HTTP {}", resp.status()));
+    }
+
+    eprintln!(
+        "[gateway] registered daemon {} (v{}) with {} capabilities",
+        daemon_id,
+        version,
+        capabilities.len()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -833,7 +1071,6 @@ mod tests {
 
     #[test]
     fn test_path_extraction() {
-        // Simulate the path splitting logic.
         let path = "/github/user/repos";
         let trimmed = path.trim_start_matches('/');
         let (provider, sub_path) = match trimmed.split_once('/') {
@@ -861,5 +1098,307 @@ mod tests {
         let path = "/";
         let trimmed = path.trim_start_matches('/');
         assert!(trimmed.is_empty());
+    }
+
+    // --- Dynamic session management tests ---
+
+    fn make_test_state() -> Arc<GatewayState> {
+        make_test_state_with_providers(HashMap::from([(
+            "github".to_string(),
+            ProviderEntry {
+                upstream: "https://api.github.com".to_string(),
+                credential: "ghp_test".to_string(),
+                evaluator: PolicyEvaluator::new(PolicyConfig {
+                    allowed_methods: vec!["GET".to_string()],
+                    ..Default::default()
+                }),
+            },
+        )]))
+    }
+
+    fn make_test_state_with_providers(
+        providers: HashMap<String, ProviderEntry>,
+    ) -> Arc<GatewayState> {
+        let static_names: Vec<String> = providers.keys().cloned().collect();
+        let mut session_providers_map = HashMap::new();
+        session_providers_map.insert("__static__".to_string(), static_names);
+
+        Arc::new(GatewayState {
+            session_id: "test-session".to_string(),
+            learning_mode: false,
+            agent_type: None,
+            project_id: None,
+            environment: None,
+            providers: RwLock::new(providers),
+            session_providers: Mutex::new(session_providers_map),
+            adapter_registry: Registry::from_config(&HashMap::new()),
+            audit: AuditLogger::new(Box::new(std::io::sink())),
+            harvester: Harvester::new(),
+            profiler: Profiler::new(),
+            http_client: reqwest::Client::new(),
+            event_sender: events::spawn_event_shipper(events::EventShipperConfig {
+                control_plane_url: String::new(),
+                ..Default::default()
+            }),
+            active_intersection_names: vec![],
+            intersection_rules: vec![],
+            counter_store: CounterStore::daily(),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_add_session_inserts_providers() {
+        let state = make_test_state();
+
+        let req = AddSessionRequest {
+            session_id: "dyn-sess-1".to_string(),
+            source_ip: None,
+            providers: Some(HashMap::from([(
+                "stripe".to_string(),
+                SessionProviderConfig {
+                    upstream: Some("https://api.stripe.com".to_string()),
+                    credential: Some("sk_test".to_string()),
+                    policy: Some(PolicyConfig {
+                        blocked_methods: vec!["DELETE".to_string()],
+                        ..Default::default()
+                    }),
+                },
+            )])),
+            expires_at: None,
+        };
+
+        let resp = handle_add_session(State(state.clone()), Json(req)).await;
+        let (status, _body) = resp.into_response().into_parts();
+        assert_eq!(status.status, StatusCode::OK);
+
+        // Verify provider was added.
+        let providers = state.providers.read().unwrap();
+        assert!(providers.contains_key("stripe"));
+        assert!(providers.contains_key("github")); // static still present
+
+        // Verify session tracking.
+        let sp = state.session_providers.lock().unwrap();
+        assert_eq!(sp.get("dyn-sess-1").unwrap(), &vec!["stripe".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_remove_session_deletes_providers() {
+        let state = make_test_state();
+
+        // First add a session with a provider.
+        let req = AddSessionRequest {
+            session_id: "dyn-sess-2".to_string(),
+            source_ip: None,
+            providers: Some(HashMap::from([(
+                "stripe".to_string(),
+                SessionProviderConfig {
+                    upstream: Some("https://api.stripe.com".to_string()),
+                    credential: Some("sk_test".to_string()),
+                    policy: None,
+                },
+            )])),
+            expires_at: None,
+        };
+        handle_add_session(State(state.clone()), Json(req)).await;
+
+        // Verify stripe is present.
+        assert!(state.providers.read().unwrap().contains_key("stripe"));
+
+        // Now remove the session.
+        let resp =
+            handle_remove_session(State(state.clone()), Path("dyn-sess-2".to_string())).await;
+        let (status, _) = resp.into_response().into_parts();
+        assert_eq!(status.status, StatusCode::OK);
+
+        // Verify stripe was removed but github remains.
+        let providers = state.providers.read().unwrap();
+        assert!(!providers.contains_key("stripe"));
+        assert!(providers.contains_key("github"));
+
+        // Verify session tracking cleaned up.
+        let sp = state.session_providers.lock().unwrap();
+        assert!(!sp.contains_key("dyn-sess-2"));
+    }
+
+    #[tokio::test]
+    async fn test_remove_unknown_session_returns_not_found() {
+        let state = make_test_state();
+
+        let resp =
+            handle_remove_session(State(state.clone()), Path("nonexistent".to_string())).await;
+        let (status, _) = resp.into_response().into_parts();
+        assert_eq!(status.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_add_then_remove_multiple_sessions() {
+        let state = make_test_state();
+
+        // Add two sessions with different providers.
+        let req1 = AddSessionRequest {
+            session_id: "sess-a".to_string(),
+            source_ip: None,
+            providers: Some(HashMap::from([(
+                "stripe".to_string(),
+                SessionProviderConfig {
+                    upstream: Some("https://api.stripe.com".to_string()),
+                    credential: Some("sk_a".to_string()),
+                    policy: None,
+                },
+            )])),
+            expires_at: None,
+        };
+        let req2 = AddSessionRequest {
+            session_id: "sess-b".to_string(),
+            source_ip: None,
+            providers: Some(HashMap::from([(
+                "gmail".to_string(),
+                SessionProviderConfig {
+                    upstream: Some("https://gmail.googleapis.com".to_string()),
+                    credential: Some("gmail_tok".to_string()),
+                    policy: None,
+                },
+            )])),
+            expires_at: None,
+        };
+        handle_add_session(State(state.clone()), Json(req1)).await;
+        handle_add_session(State(state.clone()), Json(req2)).await;
+
+        assert_eq!(state.providers.read().unwrap().len(), 3); // github + stripe + gmail
+
+        // Remove sess-a (stripe).
+        handle_remove_session(State(state.clone()), Path("sess-a".to_string())).await;
+        {
+            let providers = state.providers.read().unwrap();
+            assert_eq!(providers.len(), 2);
+            assert!(providers.contains_key("github"));
+            assert!(providers.contains_key("gmail"));
+            assert!(!providers.contains_key("stripe"));
+        }
+
+        // Remove sess-b (gmail).
+        handle_remove_session(State(state.clone()), Path("sess-b".to_string())).await;
+        {
+            let providers = state.providers.read().unwrap();
+            assert_eq!(providers.len(), 1);
+            assert!(providers.contains_key("github"));
+        }
+    }
+
+    // --- Counter-based daily limit tests ---
+
+    #[tokio::test]
+    async fn test_daily_limit_allows_within_budget() {
+        let state = make_test_state_with_providers(HashMap::from([(
+            "stripe".to_string(),
+            ProviderEntry {
+                upstream: "https://api.stripe.com".to_string(),
+                credential: "sk_test".to_string(),
+                evaluator: PolicyEvaluator::new(PolicyConfig {
+                    daily_limit_cents: Some(10000),
+                    ..Default::default()
+                }),
+            },
+        )]));
+
+        let params = HashMap::from([("amount".to_string(), serde_json::json!(3000))]);
+        let allow = crate::policy::Decision {
+            allowed: true,
+            reason: "default allow".to_string(),
+            matched_rule: String::new(),
+        };
+
+        let result = check_daily_limit(&state, "stripe", &params, allow);
+        assert!(result.allowed);
+
+        // Counter should have been incremented.
+        let key = CounterStore::key("test-session", "stripe", "daily_spend_cents");
+        assert_eq!(state.counter_store.get(&key), 3000);
+    }
+
+    #[tokio::test]
+    async fn test_daily_limit_blocks_when_exceeded() {
+        let state = make_test_state_with_providers(HashMap::from([(
+            "stripe".to_string(),
+            ProviderEntry {
+                upstream: "https://api.stripe.com".to_string(),
+                credential: "sk_test".to_string(),
+                evaluator: PolicyEvaluator::new(PolicyConfig {
+                    daily_limit_cents: Some(5000),
+                    ..Default::default()
+                }),
+            },
+        )]));
+
+        let allow = crate::policy::Decision {
+            allowed: true,
+            reason: "default allow".to_string(),
+            matched_rule: String::new(),
+        };
+
+        // First charge: 3000 (under limit)
+        let params = HashMap::from([("amount".to_string(), serde_json::json!(3000))]);
+        let result = check_daily_limit(&state, "stripe", &params, allow.clone());
+        assert!(result.allowed);
+
+        // Second charge: 3000 (would bring total to 6000 > 5000)
+        let result = check_daily_limit(&state, "stripe", &params, allow);
+        assert!(!result.allowed);
+        assert!(result.reason.contains("daily_limit_cents"));
+        assert_eq!(result.matched_rule, "daily_limit_cents");
+    }
+
+    #[tokio::test]
+    async fn test_daily_limit_no_amount_passes_through() {
+        let state = make_test_state_with_providers(HashMap::from([(
+            "stripe".to_string(),
+            ProviderEntry {
+                upstream: "https://api.stripe.com".to_string(),
+                credential: "sk_test".to_string(),
+                evaluator: PolicyEvaluator::new(PolicyConfig {
+                    daily_limit_cents: Some(5000),
+                    ..Default::default()
+                }),
+            },
+        )]));
+
+        // No amount parameter — should pass through.
+        let params = HashMap::new();
+        let allow = crate::policy::Decision {
+            allowed: true,
+            reason: "default allow".to_string(),
+            matched_rule: String::new(),
+        };
+
+        let result = check_daily_limit(&state, "stripe", &params, allow);
+        assert!(result.allowed);
+    }
+
+    #[tokio::test]
+    async fn test_daily_limit_skips_already_denied() {
+        let state = make_test_state_with_providers(HashMap::from([(
+            "stripe".to_string(),
+            ProviderEntry {
+                upstream: "https://api.stripe.com".to_string(),
+                credential: "sk_test".to_string(),
+                evaluator: PolicyEvaluator::new(PolicyConfig {
+                    daily_limit_cents: Some(5000),
+                    ..Default::default()
+                }),
+            },
+        )]));
+
+        let params = HashMap::from([("amount".to_string(), serde_json::json!(100))]);
+        let denied = crate::policy::Decision {
+            allowed: false,
+            reason: "blocked by other rule".to_string(),
+            matched_rule: "blocked_methods".to_string(),
+        };
+
+        let result = check_daily_limit(&state, "stripe", &params, denied);
+        assert!(!result.allowed);
+        // Counter should NOT have been incremented.
+        let key = CounterStore::key("test-session", "stripe", "daily_spend_cents");
+        assert_eq!(state.counter_store.get(&key), 0);
     }
 }

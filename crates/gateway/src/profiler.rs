@@ -40,6 +40,12 @@ pub struct PolicySuggestion {
     pub confidence: String,
 }
 
+impl Default for Profiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Profiler {
     /// Creates a new behavior profiler.
     pub fn new() -> Self {

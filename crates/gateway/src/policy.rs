@@ -1,4 +1,4 @@
-use crate::gateway::config::PolicyConfig;
+use crate::config::PolicyConfig;
 use std::collections::HashMap;
 
 /// Checks requests against a set of policy rules.
