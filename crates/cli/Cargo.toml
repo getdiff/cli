@@ -1,0 +1,72 @@
+[package]
+name = "getdiff"
+version = "0.1.9"
+edition = "2024"
+description = "Diff CLI - capture and upload agentic coding sessions"
+license = "Apache-2.0"
+readme = "../../README.md"
+repository = "https://github.com/getdiff/cli"
+homepage = "https://getdiff.now"
+keywords = ["cli", "developer-tools", "llm", "ai", "observability"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# Shared gateway library
+getdiff-gateway = { path = "../gateway" }
+
+# CLI framework
+clap = { version = "4", features = ["derive", "env"] }
+
+# JSON parsing
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP client for uploading
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# File watching for the daemon
+notify = "7"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Regex for redaction
+regex = "1"
+once_cell = "1"
+
+# Home directory detection
+dirs = "6"
+
+# UUID handling
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Glob patterns for file exclusion
+glob = "0.3"
+
+# Hostname detection
+gethostname = "1"
+
+# Advisory file locking (unix flock)
+libc = "0.2"
+sha2 = "0.10"
+urlencoding = "2"
+
+# Open URLs in the browser
+open = "5"
+
+# Gateway config (for `gateway` subcommand)
+serde_yaml = "0.9"
+
+[[bin]]
+name = "getdiff"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"

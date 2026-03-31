@@ -1,4 +1,4 @@
-use crate::gateway::config::{IntersectionPolicyConfig, PolicyConfig};
+use crate::config::{IntersectionPolicyConfig, PolicyConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -288,7 +288,7 @@ pub fn default_intersection_rules() -> Vec<IntersectionRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gateway::config::{CapabilityMatcher, IntersectionWhen};
+    use crate::config::{CapabilityMatcher, IntersectionWhen};
 
     #[test]
     fn test_compute_intersections_two_providers_match() {

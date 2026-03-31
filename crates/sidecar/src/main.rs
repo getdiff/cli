@@ -12,12 +12,6 @@
 //! Or pass as args:
 //!   gateway-sidecar [config_path] [port]
 
-// These modules must be declared because Rust compiles each [[bin]] independently.
-// They reference the same source files as the main CLI binary.
-// The sidecar only uses proxy + config; other modules (mockapi, etc.) appear as dead code.
-#[allow(dead_code, clippy::collapsible_if)]
-mod gateway;
-
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -53,7 +47,7 @@ async fn main() {
     eprintln!("  config: {}", config_path);
     eprintln!("  port:   {}", port);
 
-    if let Err(e) = gateway::proxy::run_proxy_from_file(&config_path, port).await {
+    if let Err(e) = getdiff_gateway::proxy::run_proxy_from_file(&config_path, port).await {
         eprintln!("fatal: {:#}", e);
         std::process::exit(1);
     }
