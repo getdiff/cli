@@ -318,10 +318,12 @@ async fn main() -> Result<()> {
             let _ = init_agent("all", port);
 
             // Install a Ctrl+C / SIGTERM handler that uninits agents on shutdown.
+            // Waits briefly after uninit to let the event shipper flush buffered events.
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
                 eprintln!("\n[gateway] shutting down — removing agent proxy configuration...");
                 let _ = uninit_agent("all");
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 std::process::exit(0);
             });
 
@@ -336,6 +338,7 @@ async fn main() -> Result<()> {
                         "\n[gateway] received SIGTERM — removing agent proxy configuration..."
                     );
                     let _ = uninit_agent("all");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     std::process::exit(0);
                 });
             }
@@ -921,10 +924,17 @@ fn init_wrapper(agent: &str, proxy_url: &str) -> Result<()> {
     std::fs::create_dir_all(&wrapper_dir)?;
 
     // Write the wrapper script.
+    // Resolve the real binary at runtime via PATH (skipping our wrapper dir)
+    // so the script doesn't break if the binary moves or is updated.
     let script = format!(
-        "#!/bin/sh\nexec env HTTP_PROXY=\"{proxy}\" HTTPS_PROXY=\"{proxy}\" \"{bin}\" \"$@\"\n",
+        "#!/bin/sh\n\
+         # Resolve the real binary by removing our wrapper dir from PATH.\n\
+         _GETDIFF_PATH=$(echo \"$PATH\" | tr ':' '\\n' | grep -v '{wrapper}' | tr '\\n' ':')\n\
+         _GETDIFF_BIN=$(PATH=\"$_GETDIFF_PATH\" command -v {agent})\n\
+         exec env HTTP_PROXY=\"{proxy}\" HTTPS_PROXY=\"{proxy}\" \"$_GETDIFF_BIN\" \"$@\"\n",
+        wrapper = wrapper_dir.display(),
+        agent = agent,
         proxy = proxy_url,
-        bin = real_path.display(),
     );
     std::fs::write(&wrapper_path, &script)?;
 

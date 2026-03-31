@@ -299,7 +299,9 @@ async fn shipper_loop(mut rx: mpsc::Receiver<Event>, config: EventShipperConfig)
     }
 }
 
-/// Returns true if at least some events were sent successfully.
+/// Attempt to send buffered events to the control plane. Mutates `buffer`
+/// in-place — successfully acknowledged events are removed. The caller
+/// determines success by comparing buffer length before and after.
 async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &mut Vec<Event>) {
     if buffer.is_empty() {
         return;

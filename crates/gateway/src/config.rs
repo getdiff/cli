@@ -493,10 +493,11 @@ intersection_policies:
 
     #[test]
     fn test_default_config() {
-        let config = default_config(None, None);
+        // Pass explicit environment to avoid dependency on CI env var.
+        let config = default_config(None, Some("test".to_string()));
         assert!(config.session.learning_mode);
         assert_eq!(config.session.agent_type, Some("default".to_string()));
-        assert_eq!(config.session.environment, Some("local".to_string()));
+        assert_eq!(config.session.environment, Some("test".to_string()));
         assert_eq!(config.providers.len(), 6);
         assert!(config.providers.contains_key("github"));
         assert!(config.providers.contains_key("anthropic"));

@@ -115,10 +115,29 @@ pub async fn handle_forward_proxy(
         &upstream_url,
     );
 
-    // Copy headers (excluding proxy-specific ones).
+    // Collect any extra hop-by-hop headers named in the Connection header.
+    let connection_tokens: Vec<String> = headers
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').map(|t| t.trim().to_lowercase()).collect())
+        .unwrap_or_default();
+
+    // Copy headers, stripping hop-by-hop headers per RFC 7230 §6.1.
     for (key, value) in headers.iter() {
         let name = key.as_str().to_lowercase();
-        if name == "proxy-authorization" || name == "proxy-connection" {
+        if matches!(
+            name.as_str(),
+            "connection"
+                | "keep-alive"
+                | "proxy-authenticate"
+                | "proxy-authorization"
+                | "proxy-connection"
+                | "te"
+                | "trailer"
+                | "transfer-encoding"
+                | "upgrade"
+        ) || connection_tokens.contains(&name)
+        {
             continue;
         }
         req = req.header(key.clone(), value.clone());
@@ -135,7 +154,31 @@ pub async fn handle_forward_proxy(
             let mut builder = axum::http::Response::builder()
                 .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
 
+            // Collect response Connection tokens for hop-by-hop stripping.
+            let resp_conn_tokens: Vec<String> = resp
+                .headers()
+                .get("connection")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.split(',').map(|t| t.trim().to_lowercase()).collect())
+                .unwrap_or_default();
+
             for (key, value) in resp.headers().iter() {
+                let name = key.as_str().to_lowercase();
+                if matches!(
+                    name.as_str(),
+                    "connection"
+                        | "keep-alive"
+                        | "proxy-authenticate"
+                        | "proxy-authorization"
+                        | "proxy-connection"
+                        | "te"
+                        | "trailer"
+                        | "transfer-encoding"
+                        | "upgrade"
+                ) || resp_conn_tokens.contains(&name)
+                {
+                    continue;
+                }
                 builder = builder.header(key.clone(), value.clone());
             }
 
@@ -205,6 +248,7 @@ pub async fn handle_forward_proxy(
         }
     }
 
+    crate::proxy::enrich_event(&mut event, state, &provider, None);
     state.event_sender.send(event);
 
     // Log to stderr.
@@ -216,24 +260,30 @@ pub async fn handle_forward_proxy(
     response
 }
 
-/// Parse "host:port" into (host, port). Defaults to port 443 if not specified.
-fn parse_host_port(authority: &str) -> (String, u16) {
+/// Parse "host:port" into (host, port). Defaults to port 443 if no port is
+/// specified. Returns `Err` if a port is present but not a valid number.
+fn parse_host_port(authority: &str) -> Result<(String, u16), String> {
     // Handle IPv6 bracket notation: [::1]:443
     if let Some(bracket_end) = authority.find(']') {
         let host = &authority[..=bracket_end];
-        let port = authority[bracket_end + 1..]
-            .strip_prefix(':')
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(443);
-        return (host.to_string(), port);
+        let port_part = &authority[bracket_end + 1..];
+        let port = if let Some(p) = port_part.strip_prefix(':') {
+            p.parse::<u16>()
+                .map_err(|_| format!("invalid port in '{}'", authority))?
+        } else {
+            443
+        };
+        return Ok((host.to_string(), port));
     }
 
     match authority.rsplit_once(':') {
         Some((host, port_str)) => {
-            let port = port_str.parse().unwrap_or(443);
-            (host.to_string(), port)
+            let port = port_str
+                .parse::<u16>()
+                .map_err(|_| format!("invalid port in '{}'", authority))?;
+            Ok((host.to_string(), port))
         }
-        None => (authority.to_string(), 443),
+        None => Ok((authority.to_string(), 443)),
     }
 }
 
@@ -333,7 +383,16 @@ async fn handle_connect_tunnel(
         return Ok(());
     }
     let target = parts[1];
-    let (hostname, port) = parse_host_port(target);
+    let (hostname, port) = match parse_host_port(target) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("[proxy] CONNECT bad target '{}': {}", target, e);
+            client
+                .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
+    };
     let provider = provider_for_host(&hostname);
 
     // Connect to upstream.
@@ -346,11 +405,11 @@ async fn handle_connect_tunnel(
             client.write_all(error_resp.as_bytes()).await?;
 
             // Log failure event.
-            let event = events::Event {
+            let mut event = events::Event {
                 schema_version: events::SCHEMA_VERSION,
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 session_id: state.session_id.clone(),
-                provider,
+                provider: provider.clone(),
                 method: "CONNECT".to_string(),
                 path: format!("{}:{}", hostname, port),
                 decision: "error".to_string(),
@@ -373,6 +432,7 @@ async fn handle_connect_tunnel(
                 credential_id: None,
                 credential_ttl: None,
             };
+            crate::proxy::enrich_event(&mut event, &state, &provider, None);
             state.event_sender.send(event);
             return Ok(());
         }
@@ -381,7 +441,7 @@ async fn handle_connect_tunnel(
     let connect_ms = start.elapsed().as_millis() as u64;
 
     // Log success event.
-    let event = events::Event {
+    let mut event = events::Event {
         schema_version: events::SCHEMA_VERSION,
         timestamp: chrono::Utc::now().to_rfc3339(),
         session_id: state.session_id.clone(),
@@ -408,6 +468,7 @@ async fn handle_connect_tunnel(
         credential_id: None,
         credential_ttl: None,
     };
+    crate::proxy::enrich_event(&mut event, &state, &provider, None);
     state.event_sender.send(event);
 
     eprintln!(
@@ -420,17 +481,19 @@ async fn handle_connect_tunnel(
         .write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
         .await?;
 
-    // Bidirectional tunnel.
+    // Bidirectional tunnel — wait for both directions to finish.
     let (mut client_read, mut client_write) = client.into_split();
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
 
     let c2u = tokio::io::copy(&mut client_read, &mut upstream_write);
     let u2c = tokio::io::copy(&mut upstream_read, &mut client_write);
 
-    // When either direction finishes, we're done.
-    tokio::select! {
-        r = c2u => { if let Err(e) = r { eprintln!("[proxy] tunnel c→u error: {}", e); } }
-        r = u2c => { if let Err(e) = r { eprintln!("[proxy] tunnel u→c error: {}", e); } }
+    let (r1, r2) = tokio::join!(c2u, u2c);
+    if let Err(e) = r1 {
+        eprintln!("[proxy] tunnel c→u error: {}", e);
+    }
+    if let Err(e) = r2 {
+        eprintln!("[proxy] tunnel u→c error: {}", e);
     }
 
     Ok(())
@@ -514,30 +577,36 @@ mod tests {
 
     #[test]
     fn test_parse_host_port_with_port() {
-        let (host, port) = parse_host_port("api.github.com:443");
+        let (host, port) = parse_host_port("api.github.com:443").unwrap();
         assert_eq!(host, "api.github.com");
         assert_eq!(port, 443);
     }
 
     #[test]
     fn test_parse_host_port_without_port() {
-        let (host, port) = parse_host_port("api.github.com");
+        let (host, port) = parse_host_port("api.github.com").unwrap();
         assert_eq!(host, "api.github.com");
         assert_eq!(port, 443);
     }
 
     #[test]
     fn test_parse_host_port_custom_port() {
-        let (host, port) = parse_host_port("localhost:8080");
+        let (host, port) = parse_host_port("localhost:8080").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);
     }
 
     #[test]
     fn test_parse_host_port_ipv6() {
-        let (host, port) = parse_host_port("[::1]:443");
+        let (host, port) = parse_host_port("[::1]:443").unwrap();
         assert_eq!(host, "[::1]");
         assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_parse_host_port_invalid_port() {
+        assert!(parse_host_port("host:badport").is_err());
+        assert!(parse_host_port("[::1]:notaport").is_err());
     }
 
     #[test]

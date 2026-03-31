@@ -181,8 +181,11 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
 
     for (name, provider_cfg) in &config.providers {
         // Load credential from environment variable.
-        let credential = std::env::var(&provider_cfg.credential.env_var).unwrap_or_default();
-        let env_var_name = provider_cfg.credential.env_var.clone();
+        let (credential, credential_env_var) = match std::env::var(&provider_cfg.credential.env_var)
+        {
+            Ok(val) if !val.is_empty() => (val, Some(provider_cfg.credential.env_var.clone())),
+            _ => (String::new(), None),
+        };
 
         let policy_cfg = merged_policies.get(name).cloned().unwrap_or_default();
         let evaluator = PolicyEvaluator::new(policy_cfg);
@@ -195,7 +198,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
                 upstream,
                 credential,
                 evaluator,
-                credential_env_var: Some(env_var_name),
+                credential_env_var,
             },
         );
     }
@@ -990,22 +993,48 @@ fn log_audit(entry: AuditEntry<'_>) {
         entry.parameters,
         intersection_rules,
     );
-    event.agent_type = entry.state.agent_type.clone();
-    event.environment = entry.state.environment.clone();
+    enrich_event(
+        &mut event,
+        entry.state,
+        entry.provider,
+        entry.credential_env_var.as_ref(),
+    );
+
+    entry.state.event_sender.send(event);
+
+    // Log locally.
+    entry.state.audit.log(audit_event);
+}
+
+// ---------------------------------------------------------------------------
+// Event enrichment
+// ---------------------------------------------------------------------------
+
+/// Enrich an event with provenance metadata from the gateway state.
+/// Called from both the path-prefix proxy handler (`log_audit`) and the
+/// forward proxy (`forward_proxy.rs`) so metadata is consistent across paths.
+pub fn enrich_event(
+    event: &mut events::Event,
+    state: &GatewayState,
+    provider: &str,
+    credential_env_var: Option<&String>,
+) {
+    event.agent_type = state.agent_type.clone();
+    event.environment = state.environment.clone();
 
     // Resolve task_id from the dynamic session that owns this provider.
     {
-        let sp = entry.state.session_providers.lock().unwrap();
+        let sp = state.session_providers.lock().unwrap();
         for (sess_id, info) in sp.iter() {
-            if sess_id != "__static__" && info.providers.contains(&entry.provider.to_string()) {
+            if sess_id != "__static__" && info.providers.contains(&provider.to_string()) {
                 event.task_id = info.task_id.clone();
                 break;
             }
         }
     }
 
-    // Set credential_id from the env var name (visibility into which credential is used).
-    if let Some(env_var) = &entry.credential_env_var {
+    // Set credential_id from the env var name.
+    if let Some(env_var) = credential_env_var {
         event.credential_id = Some(env_var.clone());
         event.credential_ttl = Some(0); // Unknown TTL for env-var credentials.
     }
@@ -1017,11 +1046,6 @@ fn log_audit(entry: AuditEntry<'_>) {
     {
         event.mcp_tool_name = Some(tool_name.to_string());
     }
-
-    entry.state.event_sender.send(event);
-
-    // Log locally.
-    entry.state.audit.log(audit_event);
 }
 
 // ---------------------------------------------------------------------------
