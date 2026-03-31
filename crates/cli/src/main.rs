@@ -111,13 +111,21 @@ enum Commands {
 
     /// Run the agent capability gateway proxy
     Gateway {
-        /// Path to gateway config YAML file
-        #[arg(long, short, default_value = "gateway.yaml")]
-        config: String,
+        /// Path to gateway config YAML file (optional — runs with built-in defaults if omitted)
+        #[arg(long, short)]
+        config: Option<String>,
 
         /// Port to listen on
-        #[arg(long, short, default_value_t = 8080)]
+        #[arg(long, short, default_value_t = 19090)]
         port: u16,
+
+        /// Agent type label (default: "default")
+        #[arg(long, env = "GATEWAY_AGENT_TYPE")]
+        agent_type: Option<String>,
+
+        /// Environment label (auto-detected: "ci" if CI=true, else "local")
+        #[arg(long, env = "GATEWAY_ENVIRONMENT")]
+        environment: Option<String>,
     },
 
     /// Run the mock API server (for gateway testing/demos)
@@ -125,6 +133,22 @@ enum Commands {
         /// Port to listen on
         #[arg(long, short, default_value_t = 9999)]
         port: u16,
+    },
+
+    /// Configure an agent to route traffic through the gateway proxy
+    Init {
+        /// Agent to configure: claude-code, copilot, codex, gemini, opencode, cursor, or --env
+        agent: String,
+
+        /// Gateway proxy port (default: 19090)
+        #[arg(long, default_value_t = 19090)]
+        port: u16,
+    },
+
+    /// Remove gateway proxy configuration from an agent
+    Uninit {
+        /// Agent to unconfigure: claude-code, copilot, codex, gemini, opencode, cursor
+        agent: String,
     },
 }
 
@@ -283,11 +307,49 @@ async fn main() -> Result<()> {
             let diff_dir = default_diff_dir();
             artifact_sync::run_sync_cycle(&server, &api_key, &diff_dir).await?;
         }
-        Commands::Gateway { config, port } => {
-            gateway::proxy::run_proxy_from_file(&config, port).await?;
+        Commands::Gateway {
+            config,
+            port,
+            agent_type,
+            environment,
+        } => {
+            // Configure all detected agents to route through the gateway on startup.
+            eprintln!("[gateway] configuring agents...");
+            let _ = init_agent("all", port);
+
+            // Install a Ctrl+C / SIGTERM handler that uninits agents on shutdown.
+            tokio::spawn(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                eprintln!("\n[gateway] shutting down — removing agent proxy configuration...");
+                let _ = uninit_agent("all");
+                std::process::exit(0);
+            });
+
+            // Also handle SIGTERM (what brew services stop sends).
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                tokio::spawn(async move {
+                    sigterm.recv().await;
+                    eprintln!(
+                        "\n[gateway] received SIGTERM — removing agent proxy configuration..."
+                    );
+                    let _ = uninit_agent("all");
+                    std::process::exit(0);
+                });
+            }
+
+            gateway::proxy::run_gateway(config.as_deref(), port, agent_type, environment).await?;
         }
         Commands::MockApi { port } => {
             gateway::mockapi::run_mock_api(port).await?;
+        }
+        Commands::Init { agent, port } => {
+            init_agent(&agent, port)?;
+        }
+        Commands::Uninit { agent } => {
+            uninit_agent(&agent)?;
         }
         Commands::Artifacts { command } => match command {
             ArtifactCommands::List {
@@ -513,6 +575,456 @@ fn default_diff_dir() -> std::path::PathBuf {
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".diff")
+}
+
+// ---------------------------------------------------------------------------
+// Agent init / uninit
+// ---------------------------------------------------------------------------
+
+/// Supported agents and how they accept proxy configuration:
+///
+/// | Agent        | Mechanism                          | Config path                    |
+/// |--------------|------------------------------------|--------------------------------|
+/// | claude-code  | `env` field in settings.json       | ~/.claude/settings.json        |
+/// | copilot      | `env` field in config.json         | ~/.copilot/config.json         |
+/// | codex        | env vars only (Node.js)            | shell environment              |
+/// | gemini       | env vars only (Node.js)            | shell environment              |
+/// | opencode     | env vars only (Go binary)          | shell environment              |
+/// | cursor       | `http.proxy` in VS Code settings   | Cursor settings.json           |
+///
+/// Claude Code and Copilot support env injection in their settings files.
+/// Codex, Gemini, and OpenCode are CLI tools that read HTTP_PROXY/HTTPS_PROXY
+/// from the process environment — `getdiff init` prints the required exports.
+/// Cursor uses VS Code's `http.proxy` setting.
+const SUPPORTED_AGENTS: &[&str] = &[
+    "claude-code",
+    "copilot",
+    "codex",
+    "gemini",
+    "opencode",
+    "cursor",
+];
+
+/// Configure an agent to route traffic through the gateway proxy.
+fn init_agent(agent: &str, port: u16) -> Result<()> {
+    let proxy_url = format!("http://localhost:{}", port);
+
+    match agent {
+        "all" => init_all(port),
+        "claude-code" => init_json_env(
+            "Claude Code",
+            "~/.claude/settings.json",
+            &home_join(".claude"),
+            &proxy_url,
+        ),
+        "copilot" => init_json_env(
+            "Copilot",
+            "~/.copilot/config.json",
+            &home_join(".copilot"),
+            &proxy_url,
+        ),
+        "cursor" => init_cursor(&proxy_url),
+        // Agents that don't have config-file env injection — install wrapper script.
+        "codex" | "gemini" | "opencode" => init_wrapper(agent, &proxy_url),
+        "--env" | "env" => {
+            eprintln!("Set these environment variables before launching your agent:");
+            eprintln!();
+            eprintln!("  export HTTP_PROXY={}", proxy_url);
+            eprintln!("  export HTTPS_PROXY={}", proxy_url);
+            eprintln!();
+            eprintln!("Or run: getdiff init <agent-name>");
+            Ok(())
+        }
+        other => {
+            bail!(
+                "Unknown agent: \"{}\". Supported: {}, all. Use `--env` for manual setup.",
+                other,
+                SUPPORTED_AGENTS.join(", ")
+            );
+        }
+    }
+}
+
+/// Remove gateway proxy configuration from an agent.
+fn uninit_agent(agent: &str) -> Result<()> {
+    match agent {
+        "all" => uninit_all(),
+        "claude-code" => {
+            uninit_json_env("Claude Code", &home_join(".claude").join("settings.json"))
+        }
+        "copilot" => uninit_json_env("Copilot", &home_join(".copilot").join("config.json")),
+        "cursor" => uninit_cursor(),
+        "codex" | "gemini" | "opencode" => uninit_wrapper(agent),
+        other => {
+            bail!(
+                "Unknown agent: \"{}\". Supported: {}, all",
+                other,
+                SUPPORTED_AGENTS.join(", ")
+            );
+        }
+    }
+}
+
+/// Returns true if the given agent appears to be installed.
+fn is_agent_installed(agent: &str) -> bool {
+    match agent {
+        "claude-code" => home_join(".claude").exists(),
+        "copilot" => home_join(".copilot").exists(),
+        "cursor" => cursor_settings_path()
+            .ok()
+            .map(|p| {
+                // Check if the Cursor app data dir exists, not the settings file itself.
+                p.parent().map(|d| d.exists()).unwrap_or(false)
+            })
+            .unwrap_or(false),
+        "codex" | "gemini" | "opencode" => which_binary(agent).is_ok(),
+        _ => false,
+    }
+}
+
+/// Configure all detected agents.
+fn init_all(port: u16) -> Result<()> {
+    let mut configured = 0u32;
+
+    for &agent in SUPPORTED_AGENTS {
+        if is_agent_installed(agent) {
+            eprintln!("--- {} ---", agent);
+            match init_agent(agent, port) {
+                Ok(()) => {
+                    configured += 1;
+                    eprintln!();
+                }
+                Err(e) => {
+                    eprintln!("  skipped: {}", e);
+                    eprintln!();
+                }
+            }
+        }
+    }
+
+    if configured == 0 {
+        eprintln!(
+            "No supported agents detected. Supported: {}",
+            SUPPORTED_AGENTS.join(", ")
+        );
+    } else {
+        eprintln!(
+            "{} agent(s) configured. Run `getdiff gateway` to start observing.",
+            configured
+        );
+    }
+    Ok(())
+}
+
+/// Remove gateway configuration from all agents that have it.
+fn uninit_all() -> Result<()> {
+    for &agent in SUPPORTED_AGENTS {
+        // Try uninit — it's safe even if the agent wasn't configured.
+        let _ = uninit_agent(agent);
+    }
+    eprintln!("All agent proxy configurations removed.");
+    Ok(())
+}
+
+/// Helper: resolve ~/.<dir> path.
+fn home_join(relative: &str) -> std::path::PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(relative)
+}
+
+/// Configure an agent that stores env vars in a JSON settings file.
+/// Works for Claude Code (~/.claude/settings.json) and Copilot (~/.copilot/config.json).
+fn init_json_env(
+    agent_name: &str,
+    display_path: &str,
+    config_dir: &std::path::Path,
+    proxy_url: &str,
+) -> Result<()> {
+    if !config_dir.exists() {
+        bail!(
+            "{} config directory not found at {}. Is {} installed?",
+            agent_name,
+            config_dir.display(),
+            agent_name
+        );
+    }
+
+    let settings_path = config_dir.join(if config_dir.ends_with(".copilot") {
+        "config.json"
+    } else {
+        "settings.json"
+    });
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    // Merge env vars into settings.
+    let env = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("{} is not a JSON object", display_path))?
+        .entry("env")
+        .or_insert_with(|| serde_json::json!({}));
+    let env_obj = env
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("env field in {} is not an object", display_path))?;
+    env_obj.insert("HTTP_PROXY".to_string(), serde_json::json!(proxy_url));
+    env_obj.insert("HTTPS_PROXY".to_string(), serde_json::json!(proxy_url));
+
+    let json_str = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(&settings_path, json_str)?;
+
+    eprintln!(
+        "{} configured to route through getDiff gateway.",
+        agent_name
+    );
+    eprintln!("  Config: {}", settings_path.display());
+    eprintln!();
+    eprintln!("Run `getdiff gateway` to start observing agent traffic.");
+    Ok(())
+}
+
+/// Remove proxy env vars from a JSON settings file.
+fn uninit_json_env(agent_name: &str, settings_path: &std::path::Path) -> Result<()> {
+    if !settings_path.exists() {
+        eprintln!(
+            "No {} settings found at {}",
+            agent_name,
+            settings_path.display()
+        );
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(settings_path)?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+        env.remove("HTTP_PROXY");
+        env.remove("HTTPS_PROXY");
+        if env.is_empty() {
+            settings.as_object_mut().unwrap().remove("env");
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(settings_path, json_str)?;
+
+    eprintln!("Gateway proxy configuration removed from {}.", agent_name);
+    eprintln!("  Config: {}", settings_path.display());
+    Ok(())
+}
+
+/// Configure Cursor via VS Code-style http.proxy setting.
+fn init_cursor(proxy_url: &str) -> Result<()> {
+    // Cursor settings path varies by platform.
+    let settings_path = cursor_settings_path()?;
+
+    // Ensure parent directory exists.
+    if let Some(parent) = settings_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        let content = std::fs::read_to_string(&settings_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = settings
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Cursor settings is not a JSON object"))?;
+    obj.insert("http.proxy".to_string(), serde_json::json!(proxy_url));
+    obj.insert("http.proxyStrictSSL".to_string(), serde_json::json!(false));
+
+    let json_str = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(&settings_path, json_str)?;
+
+    eprintln!("Cursor configured to route through getDiff gateway.");
+    eprintln!("  Config: {}", settings_path.display());
+    eprintln!();
+    eprintln!("Run `getdiff gateway` to start observing agent traffic.");
+    Ok(())
+}
+
+/// Remove proxy settings from Cursor.
+fn uninit_cursor() -> Result<()> {
+    let settings_path = cursor_settings_path()?;
+    if !settings_path.exists() {
+        eprintln!("No Cursor settings found at {}", settings_path.display());
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(&settings_path)?;
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}));
+
+    if let Some(obj) = settings.as_object_mut() {
+        obj.remove("http.proxy");
+        obj.remove("http.proxyStrictSSL");
+    }
+
+    let json_str = serde_json::to_string_pretty(&settings)?;
+    std::fs::write(&settings_path, json_str)?;
+
+    eprintln!("Gateway proxy configuration removed from Cursor.");
+    eprintln!("  Config: {}", settings_path.display());
+    Ok(())
+}
+
+/// Resolve Cursor's settings.json path (platform-dependent).
+fn cursor_settings_path() -> Result<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot determine home directory"))?
+            .join("Library/Application Support/Cursor/User/settings.json");
+        Ok(path)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let path = dirs::config_dir()
+            .ok_or_else(|| anyhow::anyhow!("cannot determine config directory"))?
+            .join("Cursor/User/settings.json");
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        bail!("Cursor init is not supported on this platform. Use `getdiff init --env` instead.");
+    }
+}
+
+/// Install a wrapper script that sets proxy env vars and exec's the real binary.
+///
+/// Creates `~/.getdiff/bin/<agent>` and ensures `~/.getdiff/bin` is on PATH
+/// by adding a source line to the user's shell profile.
+fn init_wrapper(agent: &str, proxy_url: &str) -> Result<()> {
+    // Find the real binary.
+    let real_path = which_binary(agent)?;
+    let wrapper_dir = home_join(".getdiff/bin");
+    let wrapper_path = wrapper_dir.join(agent);
+
+    // Don't wrap our own wrapper.
+    if real_path.starts_with(&wrapper_dir) {
+        eprintln!(
+            "{} is already configured (wrapper at {}).",
+            agent,
+            wrapper_path.display()
+        );
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(&wrapper_dir)?;
+
+    // Write the wrapper script.
+    let script = format!(
+        "#!/bin/sh\nexec env HTTP_PROXY=\"{proxy}\" HTTPS_PROXY=\"{proxy}\" \"{bin}\" \"$@\"\n",
+        proxy = proxy_url,
+        bin = real_path.display(),
+    );
+    std::fs::write(&wrapper_path, &script)?;
+
+    // Make it executable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&wrapper_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Ensure ~/.getdiff/bin is on PATH via the shell profile.
+    ensure_path_entry(&wrapper_dir)?;
+
+    eprintln!("{} configured to route through getDiff gateway.", agent);
+    eprintln!("  Wrapper: {}", wrapper_path.display());
+    eprintln!("  Wraps:   {}", real_path.display());
+    eprintln!();
+    eprintln!("Open a new shell, then run `getdiff gateway` to start observing.");
+    Ok(())
+}
+
+/// Remove a wrapper script installed by `init_wrapper`.
+fn uninit_wrapper(agent: &str) -> Result<()> {
+    let wrapper_path = home_join(".getdiff/bin").join(agent);
+    if wrapper_path.exists() {
+        std::fs::remove_file(&wrapper_path)?;
+        eprintln!("Removed {} wrapper at {}", agent, wrapper_path.display());
+    } else {
+        eprintln!(
+            "No wrapper found for {} at {}",
+            agent,
+            wrapper_path.display()
+        );
+    }
+
+    // Clean up the bin directory if empty.
+    let wrapper_dir = home_join(".getdiff/bin");
+    if wrapper_dir.exists() && std::fs::read_dir(&wrapper_dir)?.next().is_none() {
+        let _ = std::fs::remove_dir(&wrapper_dir);
+    }
+    Ok(())
+}
+
+/// Find the real binary path for an agent, skipping our own wrappers.
+fn which_binary(name: &str) -> Result<std::path::PathBuf> {
+    let wrapper_dir = home_join(".getdiff/bin");
+
+    // Search PATH for the binary, skipping our wrapper directory.
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            if dir == wrapper_dir {
+                continue;
+            }
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    bail!("Could not find `{}` on PATH. Is it installed?", name)
+}
+
+/// Ensure `~/.getdiff/bin` is on PATH by adding a line to the shell profile.
+/// Idempotent — won't add the line if it's already present.
+fn ensure_path_entry(bin_dir: &std::path::Path) -> Result<()> {
+    let source_line = format!("export PATH=\"{}:$PATH\"", bin_dir.display());
+
+    // Detect the user's shell profile.
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let profile = if shell.contains("zsh") {
+        home_join(".zshrc")
+    } else {
+        home_join(".bashrc")
+    };
+
+    // Check if the line is already present.
+    if profile.exists() {
+        let content = std::fs::read_to_string(&profile)?;
+        if content.contains(&bin_dir.display().to_string()) {
+            return Ok(());
+        }
+    }
+
+    // Append the PATH entry with a comment.
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)?;
+    writeln!(f)?;
+    writeln!(f, "# Added by getdiff — agent proxy wrappers")?;
+    writeln!(f, "{}", source_line)?;
+
+    eprintln!(
+        "  Added {} to PATH in {}",
+        bin_dir.display(),
+        profile.display()
+    );
+    Ok(())
 }
 
 #[cfg(test)]

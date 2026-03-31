@@ -41,6 +41,16 @@ pub struct ProviderEntry {
     pub credential: String,
     /// Policy evaluator for this provider.
     pub evaluator: PolicyEvaluator,
+    /// Name of the env var the credential was loaded from (for event metadata).
+    pub credential_env_var: Option<String>,
+}
+
+/// Metadata tracked per dynamic session.
+pub struct SessionInfo {
+    /// Provider names added by this session.
+    pub providers: Vec<String>,
+    /// Task ID from the session request, propagated to events.
+    pub task_id: Option<String>,
 }
 
 /// Shared state available to all axum handlers.
@@ -51,17 +61,15 @@ pub struct GatewayState {
     pub learning_mode: bool,
     /// Agent type for profiling (from config).
     pub agent_type: Option<String>,
-    /// Project identifier (from config).
-    pub project_id: Option<String>,
     /// Environment label (from config).
     pub environment: Option<String>,
     /// Per-provider configuration: upstream URL, credential, and policy evaluator.
     /// Uses `RwLock` so proxy reads don't block each other — only session
     /// add/remove takes a write lock.
     pub providers: RwLock<HashMap<String, ProviderEntry>>,
-    /// Tracks which providers were added by each dynamic session (session_id → provider names).
+    /// Tracks which providers and metadata were added by each dynamic session.
     /// Providers from the static YAML config are stored under the key `"__static__"`.
-    pub session_providers: Mutex<HashMap<String, Vec<String>>>,
+    pub session_providers: Mutex<HashMap<String, SessionInfo>>,
     /// Registry of provider adapters for parsing requests.
     pub adapter_registry: Registry,
     /// Structured audit logger.
@@ -89,6 +97,58 @@ pub struct GatewayState {
 /// Load a config file and run the proxy. Called from the CLI entry point.
 pub async fn run_proxy_from_file(config_path: &str, port: u16) -> anyhow::Result<()> {
     let config = crate::config::load(config_path)?;
+    run_proxy(config, port).await
+}
+
+/// Entry point for the `getdiff gateway` CLI command.
+///
+/// If `config_path` is provided, loads and merges with defaults.
+/// Otherwise uses built-in defaults (all providers, learning mode).
+/// CLI flags `agent_type` and `environment` override config values.
+pub async fn run_gateway(
+    config_path: Option<&str>,
+    port: u16,
+    agent_type: Option<String>,
+    environment: Option<String>,
+) -> anyhow::Result<()> {
+    let mut config = if let Some(path) = config_path {
+        let yaml_config = crate::config::load(path)?;
+        let defaults = crate::config::default_config(None, None);
+        crate::config::merge_with_defaults(defaults, yaml_config)
+    } else {
+        eprintln!("[gateway] no config file specified — using built-in defaults (learning mode)");
+        crate::config::default_config(None, None)
+    };
+
+    // CLI flags override config values.
+    if let Some(at) = agent_type {
+        config.session.agent_type = Some(at);
+    }
+    if let Some(env) = environment {
+        config.session.environment = Some(env);
+    }
+
+    // Warn if YAML config specifies org_id (it's ignored — derived from CLI token).
+    if let Some(org_id) = &config.session.org_id {
+        eprintln!(
+            "[gateway] WARNING: config specifies org_id \"{}\" but this field is ignored. \
+             The org_id is derived from your CLI token by the platform. \
+             Remove the org_id field from your config to silence this warning.",
+            org_id
+        );
+    }
+
+    eprintln!(
+        "[gateway] mode: transparent forward proxy | learning_mode: {} | agent_type: {} | environment: {}",
+        config.session.learning_mode,
+        config.session.agent_type.as_deref().unwrap_or("default"),
+        config.session.environment.as_deref().unwrap_or("local"),
+    );
+    eprintln!(
+        "[gateway] configure your agent with: HTTP_PROXY=http://localhost:{0} HTTPS_PROXY=http://localhost:{0}",
+        port
+    );
+
     run_proxy(config, port).await
 }
 
@@ -122,6 +182,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
     for (name, provider_cfg) in &config.providers {
         // Load credential from environment variable.
         let credential = std::env::var(&provider_cfg.credential.env_var).unwrap_or_default();
+        let env_var_name = provider_cfg.credential.env_var.clone();
 
         let policy_cfg = merged_policies.get(name).cloned().unwrap_or_default();
         let evaluator = PolicyEvaluator::new(policy_cfg);
@@ -134,6 +195,7 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
                 upstream,
                 credential,
                 evaluator,
+                credential_env_var: Some(env_var_name),
             },
         );
     }
@@ -147,7 +209,13 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
     // Track which providers came from static config.
     let static_provider_names: Vec<String> = providers.keys().cloned().collect();
     let mut session_providers_map = HashMap::new();
-    session_providers_map.insert("__static__".to_string(), static_provider_names);
+    session_providers_map.insert(
+        "__static__".to_string(),
+        SessionInfo {
+            providers: static_provider_names,
+            task_id: None,
+        },
+    );
 
     // Spawn the background event shipper.
     let control_plane_url = std::env::var("GATEWAY_CONTROL_PLANE_URL").unwrap_or_default();
@@ -185,7 +253,6 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         session_id: config.session.id.clone(),
         learning_mode: config.session.learning_mode,
         agent_type: config.session.agent_type.clone(),
-        project_id: config.session.project_id.clone(),
         environment: config.session.environment.clone(),
         providers: RwLock::new(providers),
         session_providers: Mutex::new(session_providers_map),
@@ -195,6 +262,8 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         profiler: Profiler::new(),
         http_client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .build()?,
         event_sender,
         active_intersection_names,
@@ -202,17 +271,16 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         counter_store: CounterStore::daily(),
     });
 
-    let app = build_router(state);
-
     let addr = format!("0.0.0.0:{}", port);
     eprintln!("gateway proxy listening on {}", addr);
 
+    // Start the forward proxy TCP listener. This handles:
+    // - CONNECT requests (HTTPS tunneling) at the TCP level
+    // - HTTP forward-proxy requests (absolute URI) via hyper
+    // - Legacy path-prefix requests are also handled via the hyper handler
+    //   which delegates to handle_forward_proxy for absolute URIs.
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    crate::forward_proxy::run_forward_proxy(state, listener).await?;
     Ok(())
 }
 
@@ -305,7 +373,7 @@ async fn handle_proxy_request(
     };
 
     // 3. Look up provider entry (read lock — concurrent reads don't block).
-    let (upstream, credential, decision) = {
+    let (upstream, credential, credential_env_var, decision) = {
         let providers = state.providers.read().unwrap();
         let entry = match providers.get(&provider_name) {
             Some(e) => e,
@@ -326,6 +394,7 @@ async fn handle_proxy_request(
                     would_reason: "",
                     body_hash: None,
                     parameters: None,
+                    credential_env_var: None,
                 });
                 return error_json(
                     StatusCode::NOT_FOUND,
@@ -342,7 +411,12 @@ async fn handle_proxy_request(
             &parsed.parameters,
         );
 
-        (entry.upstream.clone(), entry.credential.clone(), decision)
+        (
+            entry.upstream.clone(),
+            entry.credential.clone(),
+            entry.credential_env_var.clone(),
+            decision,
+        )
     };
 
     // 5. Compute body hash and parameters for event shipping.
@@ -408,6 +482,7 @@ async fn handle_proxy_request(
                 would_reason: &decision.reason,
                 body_hash: body_hash.clone(),
                 parameters: params_json.clone(),
+                credential_env_var: credential_env_var.clone(),
             });
 
             return match resp {
@@ -442,6 +517,7 @@ async fn handle_proxy_request(
             would_reason: "",
             body_hash: body_hash.clone(),
             parameters: params_json.clone(),
+            credential_env_var: credential_env_var.clone(),
         });
 
         return (
@@ -498,6 +574,7 @@ async fn handle_proxy_request(
                 would_reason: "",
                 body_hash,
                 parameters: params_json,
+                credential_env_var: credential_env_var.clone(),
             });
             r
         }
@@ -526,6 +603,7 @@ async fn handle_proxy_request(
                 would_reason: "",
                 body_hash,
                 parameters: params_json,
+                credential_env_var,
             });
             error_json(StatusCode::BAD_GATEWAY, &msg)
         }
@@ -683,6 +761,7 @@ async fn handle_suggest(
 struct AddSessionRequest {
     session_id: String,
     source_ip: Option<String>,
+    task_id: Option<String>,
     providers: Option<HashMap<String, SessionProviderConfig>>,
     expires_at: Option<String>,
 }
@@ -747,6 +826,7 @@ async fn handle_add_session(
                     upstream,
                     credential,
                     evaluator,
+                    credential_env_var: None, // Dynamic sessions don't use env vars.
                 },
             );
         }
@@ -763,13 +843,20 @@ async fn handle_add_session(
                     upstream: entry.upstream.clone(),
                     credential: entry.credential.clone(),
                     evaluator: PolicyEvaluator::new(merged_policy.clone()),
+                    credential_env_var: entry.credential_env_var.clone(),
                 };
             }
         }
 
         // Track which providers belong to this session.
         let mut sp = state.session_providers.lock().unwrap();
-        sp.insert(req.session_id.clone(), added_names);
+        sp.insert(
+            req.session_id.clone(),
+            SessionInfo {
+                providers: added_names,
+                task_id: req.task_id.clone(),
+            },
+        );
     }
 
     (
@@ -791,7 +878,10 @@ async fn handle_remove_session(
     // Look up which providers belong to this session.
     let provider_names = {
         let mut sp = state.session_providers.lock().unwrap();
-        sp.remove(&id).unwrap_or_default()
+        match sp.remove(&id) {
+            Some(info) => info.providers,
+            None => Vec::new(),
+        }
     };
 
     if provider_names.is_empty() {
@@ -827,6 +917,7 @@ async fn handle_remove_session(
                     upstream: entry.upstream.clone(),
                     credential: entry.credential.clone(),
                     evaluator: PolicyEvaluator::new(merged_policy.clone()),
+                    credential_env_var: entry.credential_env_var.clone(),
                 };
             }
         }
@@ -864,6 +955,7 @@ struct AuditEntry<'a> {
     would_reason: &'a str,
     body_hash: Option<String>,
     parameters: Option<serde_json::Value>,
+    credential_env_var: Option<String>,
 }
 
 /// Record an audit event locally and ship to the control plane.
@@ -899,8 +991,24 @@ fn log_audit(entry: AuditEntry<'_>) {
         intersection_rules,
     );
     event.agent_type = entry.state.agent_type.clone();
-    event.project_id = entry.state.project_id.clone();
     event.environment = entry.state.environment.clone();
+
+    // Resolve task_id from the dynamic session that owns this provider.
+    {
+        let sp = entry.state.session_providers.lock().unwrap();
+        for (sess_id, info) in sp.iter() {
+            if sess_id != "__static__" && info.providers.contains(&entry.provider.to_string()) {
+                event.task_id = info.task_id.clone();
+                break;
+            }
+        }
+    }
+
+    // Set credential_id from the env var name (visibility into which credential is used).
+    if let Some(env_var) = &entry.credential_env_var {
+        event.credential_id = Some(env_var.clone());
+        event.credential_ttl = Some(0); // Unknown TTL for env-var credentials.
+    }
 
     // Promote mcp_tool_name from parsed parameters to top-level event field.
     if event.mcp_tool_name.is_none()
@@ -1112,6 +1220,7 @@ mod tests {
                     allowed_methods: vec!["GET".to_string()],
                     ..Default::default()
                 }),
+                credential_env_var: None,
             },
         )]))
     }
@@ -1121,13 +1230,18 @@ mod tests {
     ) -> Arc<GatewayState> {
         let static_names: Vec<String> = providers.keys().cloned().collect();
         let mut session_providers_map = HashMap::new();
-        session_providers_map.insert("__static__".to_string(), static_names);
+        session_providers_map.insert(
+            "__static__".to_string(),
+            SessionInfo {
+                providers: static_names,
+                task_id: None,
+            },
+        );
 
         Arc::new(GatewayState {
             session_id: "test-session".to_string(),
             learning_mode: false,
             agent_type: None,
-            project_id: None,
             environment: None,
             providers: RwLock::new(providers),
             session_providers: Mutex::new(session_providers_map),
@@ -1135,7 +1249,11 @@ mod tests {
             audit: AuditLogger::new(Box::new(std::io::sink())),
             harvester: Harvester::new(),
             profiler: Profiler::new(),
-            http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
             event_sender: events::spawn_event_shipper(events::EventShipperConfig {
                 control_plane_url: String::new(),
                 ..Default::default()
@@ -1153,6 +1271,7 @@ mod tests {
         let req = AddSessionRequest {
             session_id: "dyn-sess-1".to_string(),
             source_ip: None,
+            task_id: None,
             providers: Some(HashMap::from([(
                 "stripe".to_string(),
                 SessionProviderConfig {
@@ -1178,7 +1297,10 @@ mod tests {
 
         // Verify session tracking.
         let sp = state.session_providers.lock().unwrap();
-        assert_eq!(sp.get("dyn-sess-1").unwrap(), &vec!["stripe".to_string()]);
+        assert_eq!(
+            sp.get("dyn-sess-1").unwrap().providers,
+            vec!["stripe".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -1189,6 +1311,7 @@ mod tests {
         let req = AddSessionRequest {
             session_id: "dyn-sess-2".to_string(),
             source_ip: None,
+            task_id: None,
             providers: Some(HashMap::from([(
                 "stripe".to_string(),
                 SessionProviderConfig {
@@ -1238,6 +1361,7 @@ mod tests {
         let req1 = AddSessionRequest {
             session_id: "sess-a".to_string(),
             source_ip: None,
+            task_id: None,
             providers: Some(HashMap::from([(
                 "stripe".to_string(),
                 SessionProviderConfig {
@@ -1251,6 +1375,7 @@ mod tests {
         let req2 = AddSessionRequest {
             session_id: "sess-b".to_string(),
             source_ip: None,
+            task_id: None,
             providers: Some(HashMap::from([(
                 "gmail".to_string(),
                 SessionProviderConfig {
@@ -1298,6 +1423,7 @@ mod tests {
                     daily_limit_cents: Some(10000),
                     ..Default::default()
                 }),
+                credential_env_var: None,
             },
         )]));
 
@@ -1327,6 +1453,7 @@ mod tests {
                     daily_limit_cents: Some(5000),
                     ..Default::default()
                 }),
+                credential_env_var: None,
             },
         )]));
 
@@ -1359,6 +1486,7 @@ mod tests {
                     daily_limit_cents: Some(5000),
                     ..Default::default()
                 }),
+                credential_env_var: None,
             },
         )]));
 
@@ -1385,6 +1513,7 @@ mod tests {
                     daily_limit_cents: Some(5000),
                     ..Default::default()
                 }),
+                credential_env_var: None,
             },
         )]));
 

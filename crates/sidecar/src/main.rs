@@ -1,12 +1,15 @@
 //! Gateway sidecar binary.
 //!
-//! Minimal entry point that runs the gateway proxy. Designed for container
-//! deployment alongside an agent sandbox. No CLI framework, no interactive
-//! features — just the proxy.
+//! Minimal entry point that runs the gateway proxy as a transparent forward
+//! proxy. Designed for container deployment alongside an agent sandbox — set
+//! `HTTPS_PROXY=http://localhost:19090` on the agent process and all traffic
+//! flows through the sidecar.
 //!
 //! Configuration:
-//!   GATEWAY_CONFIG       — path to gateway YAML config (default: /etc/gateway/gateway.yaml)
-//!   GATEWAY_PORT         — listen port (default: 8080)
+//!   GATEWAY_CONFIG       — path to gateway YAML config (optional — defaults are fine)
+//!   GATEWAY_PORT         — listen port (default: 19090)
+//!   GATEWAY_AGENT_TYPE   — agent type label (default: auto-detect)
+//!   GATEWAY_ENVIRONMENT  — environment label (default: "ci" if CI=true, else "local")
 //!   GATEWAY_CONTROL_PLANE_URL — control plane URL for event shipping (optional)
 //!
 //! Or pass as args:
@@ -16,10 +19,10 @@
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let config_path = if args.len() > 1 {
-        args[1].clone()
+    let config_path: Option<String> = if args.len() > 1 {
+        Some(args[1].clone())
     } else {
-        std::env::var("GATEWAY_CONFIG").unwrap_or_else(|_| "/etc/gateway/gateway.yaml".to_string())
+        std::env::var("GATEWAY_CONFIG").ok()
     };
 
     let port: u16 = if args.len() > 2 {
@@ -39,15 +42,24 @@ async fn main() {
                     std::process::exit(1);
                 }
             },
-            Err(_) => 8080,
+            Err(_) => 19090,
         }
     };
 
+    let agent_type = std::env::var("GATEWAY_AGENT_TYPE").ok();
+    let environment = std::env::var("GATEWAY_ENVIRONMENT").ok();
+
     eprintln!("gateway-sidecar starting");
-    eprintln!("  config: {}", config_path);
+    eprintln!(
+        "  config: {}",
+        config_path.as_deref().unwrap_or("(defaults)")
+    );
     eprintln!("  port:   {}", port);
 
-    if let Err(e) = getdiff_gateway::proxy::run_proxy_from_file(&config_path, port).await {
+    if let Err(e) =
+        getdiff_gateway::proxy::run_gateway(config_path.as_deref(), port, agent_type, environment)
+            .await
+    {
         eprintln!("fatal: {:#}", e);
         std::process::exit(1);
     }
