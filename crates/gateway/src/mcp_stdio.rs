@@ -92,11 +92,11 @@ pub fn jsonrpc_error_response(line: &str, reason: &str) -> Option<String> {
 ///
 /// Returns the number of messages forwarded and blocked.
 pub fn run_mcp_wrap(config: McpWrapConfig) -> io::Result<(usize, usize)> {
-    // Build adapter and evaluator.
-    let adapter_config = config.adapter_config.unwrap_or(AdapterConfig {
-        body_format: "jsonrpc".to_string(),
-        ..Default::default()
-    });
+    // Build adapter and evaluator. Always force jsonrpc body format
+    // regardless of what the caller passes — this wrapper only handles
+    // JSON-RPC stdio traffic.
+    let mut adapter_config = config.adapter_config.unwrap_or_default();
+    adapter_config.body_format = "jsonrpc".to_string();
     let adapter = GenericAdapter::new(&config.provider_name, adapter_config);
     let evaluator = PolicyEvaluator::new(config.policy);
 
@@ -113,13 +113,15 @@ pub fn run_mcp_wrap(config: McpWrapConfig) -> io::Result<(usize, usize)> {
         .ok_or_else(|| io::Error::other("failed to capture child stdout"))?;
 
     // Spawn a thread to relay MCP server stdout → our stdout.
+    // Lock is acquired per-line so the main thread can also write to stdout
+    // (e.g., JSON-RPC error responses for blocked requests).
     let relay_handle = std::thread::spawn(move || {
         let reader = io::BufReader::new(child_stdout);
-        let stdout = io::stdout();
-        let mut stdout = stdout.lock();
         for line in reader.lines() {
             match line {
                 Ok(l) => {
+                    let stdout = io::stdout();
+                    let mut stdout = stdout.lock();
                     let _ = writeln!(stdout, "{}", l);
                     let _ = stdout.flush();
                 }
@@ -178,7 +180,14 @@ pub fn run_mcp_wrap(config: McpWrapConfig) -> io::Result<(usize, usize)> {
     drop(child_stdin);
 
     // Wait for relay thread and child process.
-    let _ = relay_handle.join();
+    if let Err(panic) = relay_handle.join() {
+        let msg = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(|s| s.as_str()))
+            .unwrap_or("unknown panic");
+        eprintln!("[mcp-wrap] relay thread panicked: {}", msg);
+    }
     let _ = child.wait();
 
     Ok((forwarded, blocked))

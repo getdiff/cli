@@ -352,17 +352,29 @@ impl GenericAdapter {
             }
         }
 
-        // Build parameters from variables.
+        // Build parameters from variables, preserving original JSON types.
+        // Parse body directly to avoid the String round-trip that loses types
+        // (e.g. string "123" would become Number(123) via serde_json::from_str).
         let mut params: HashMap<String, serde_json::Value> = HashMap::new();
 
-        for (k, v) in &body_fields {
-            if k.starts_with('_') {
-                continue;
-            }
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(v) {
-                params.insert(k.clone(), parsed);
-            } else {
-                params.insert(k.clone(), serde_json::Value::String(v.clone()));
+        if let Ok(obj) = serde_json::from_slice::<serde_json::Value>(body)
+            && let Some(vars) = obj.get("variables").and_then(|v| v.as_object())
+        {
+            // Detect single "input" object pattern (same as parse_graphql_body).
+            let entries: Box<dyn Iterator<Item = (&String, &serde_json::Value)>> =
+                if vars.len() == 1 {
+                    if let Some(input) = vars.get("input").and_then(|v| v.as_object()) {
+                        Box::new(input.iter())
+                    } else {
+                        Box::new(vars.iter())
+                    }
+                } else {
+                    Box::new(vars.iter())
+                };
+            for (k, v) in entries {
+                if !k.starts_with("_gql_") {
+                    params.insert(k.clone(), v.clone());
+                }
             }
         }
 
@@ -635,6 +647,29 @@ fn parse_gmail_mime_body(body: &[u8]) -> HashMap<String, String> {
     map
 }
 
+/// Insert a GraphQL variable into the flat map with appropriate type conversion.
+/// Skips keys with the reserved `_gql_` prefix to prevent user variables from
+/// overwriting internal metadata.
+fn insert_graphql_var(map: &mut HashMap<String, String>, k: &str, v: &serde_json::Value) {
+    if k.starts_with("_gql_") {
+        return;
+    }
+    match v {
+        serde_json::Value::String(s) => {
+            map.insert(k.to_string(), s.clone());
+        }
+        serde_json::Value::Number(n) => {
+            map.insert(k.to_string(), n.to_string());
+        }
+        serde_json::Value::Bool(b) => {
+            map.insert(k.to_string(), b.to_string());
+        }
+        _ => {
+            map.insert(k.to_string(), v.to_string());
+        }
+    }
+}
+
 /// Parse a GraphQL request body.
 ///
 /// The body is JSON with `query`, optional `variables`, and optional `operationName`:
@@ -675,26 +710,34 @@ fn parse_graphql_body(body: &[u8]) -> HashMap<String, String> {
     }
 
     // Flatten variables into top-level fields.
+    // If variables contains a single "input" object (common in mutations like
+    // `variables: { "input": { "title": "...", "amount": 100 } }`), flatten
+    // the nested object so policies can match on "title" and "amount" directly.
     if let Some(vars) = obj.get("variables").and_then(|v| v.as_object()) {
-        for (k, v) in vars {
-            match v {
-                serde_json::Value::String(s) => {
-                    map.insert(k.clone(), s.clone());
-                }
-                serde_json::Value::Number(n) => {
-                    map.insert(k.clone(), n.to_string());
-                }
-                serde_json::Value::Bool(b) => {
-                    map.insert(k.clone(), b.to_string());
-                }
-                _ => {
-                    map.insert(k.clone(), v.to_string());
-                }
+        // Detect single "input" object pattern.
+        if vars.len() == 1
+            && let Some(input) = vars.get("input").and_then(|v| v.as_object())
+        {
+            for (k, v) in input {
+                insert_graphql_var(&mut map, k, v);
             }
+            return map;
+        }
+        for (k, v) in vars {
+            insert_graphql_var(&mut map, k, v);
         }
     }
 
     map
+}
+
+/// Strip leading GraphQL comments (lines starting with `#`) and whitespace.
+fn strip_graphql_comments(query: &str) -> String {
+    query
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Extract the operation name from a GraphQL query string.
@@ -702,7 +745,8 @@ fn parse_graphql_body(body: &[u8]) -> HashMap<String, String> {
 /// `query GetUser { ... }` → `"GetUser"`
 /// `{ user { name } }` → `None` (anonymous query)
 fn extract_graphql_operation_name(query: &str) -> Option<String> {
-    let trimmed = query.trim();
+    let stripped = strip_graphql_comments(query);
+    let trimmed = stripped.trim();
 
     // Skip leading keyword (query, mutation, subscription).
     let after_keyword = if trimmed.starts_with("query ")
@@ -737,7 +781,8 @@ fn extract_graphql_operation_name(query: &str) -> Option<String> {
 
 /// Extract the operation type from a GraphQL query string.
 fn extract_graphql_operation_type(query: &str) -> Option<String> {
-    let trimmed = query.trim();
+    let stripped = strip_graphql_comments(query);
+    let trimmed = stripped.trim();
     if trimmed.starts_with("mutation") {
         Some("mutation".to_string())
     } else if trimmed.starts_with("subscription") {
@@ -1541,6 +1586,100 @@ operations:
             None
         );
         assert_eq!(extract_graphql_operation_name(""), None);
+        // Leading comments should be stripped.
+        assert_eq!(
+            extract_graphql_operation_name("# comment\nmutation DeleteUser { ... }"),
+            Some("DeleteUser".to_string())
+        );
+        assert_eq!(
+            extract_graphql_operation_name("# line 1\n# line 2\nquery FetchData { ... }"),
+            Some("FetchData".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_graphql_operation_type() {
+        assert_eq!(
+            extract_graphql_operation_type("mutation Foo { ... }"),
+            Some("mutation".to_string())
+        );
+        assert_eq!(
+            extract_graphql_operation_type("query Bar { ... }"),
+            Some("query".to_string())
+        );
+        assert_eq!(
+            extract_graphql_operation_type("{ viewer { login } }"),
+            Some("query".to_string())
+        );
+        assert_eq!(
+            extract_graphql_operation_type("subscription OnUpdate { ... }"),
+            Some("subscription".to_string())
+        );
+        // Leading comments.
+        assert_eq!(
+            extract_graphql_operation_type("# comment\nmutation DeleteUser { ... }"),
+            Some("mutation".to_string())
+        );
+        assert_eq!(extract_graphql_operation_type(""), None);
+    }
+
+    #[test]
+    fn test_graphql_input_object_flattening() {
+        let adapter = graphql_raw_adapter();
+        let body = serde_json::json!({
+            "query": "mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id } }",
+            "operationName": "CreateUser",
+            "variables": {
+                "input": {
+                    "title": "Bug report",
+                    "amount": 500
+                }
+            }
+        });
+        let op = adapter.parse_request("POST", "/graphql", body.to_string().as_bytes());
+        assert_eq!(op.operation, "CreateUser");
+        // Nested input fields should be flattened to top-level.
+        assert_eq!(op.parameters["title"], serde_json::json!("Bug report"));
+        assert_eq!(op.parameters["amount"], serde_json::json!(500));
+    }
+
+    #[test]
+    fn test_graphql_gql_prefix_not_spoofable() {
+        let adapter = graphql_raw_adapter();
+        let body = serde_json::json!({
+            "query": "mutation CreateUser { createUser { id } }",
+            "operationName": "CreateUser",
+            "variables": {
+                "_gql_operation_name": "SpoofedOp",
+                "name": "Alice"
+            }
+        });
+        let op = adapter.parse_request("POST", "/graphql", body.to_string().as_bytes());
+        // The operation should be from operationName, not the spoofed variable.
+        assert_eq!(op.operation, "CreateUser");
+        // The spoofed key should NOT appear in parameters.
+        assert!(!op.parameters.contains_key("_gql_operation_name"));
+        // Normal variables should still be present.
+        assert_eq!(op.parameters["name"], serde_json::json!("Alice"));
+    }
+
+    #[test]
+    fn test_graphql_preserves_string_variable_types() {
+        let adapter = graphql_raw_adapter();
+        // "123" should stay a string, not become Number(123).
+        let body = serde_json::json!({
+            "query": "query GetUser($id: ID!) { user(id: $id) { name } }",
+            "operationName": "GetUser",
+            "variables": {
+                "id": "123",
+                "flag": true,
+                "count": 42
+            }
+        });
+        let op = adapter.parse_request("POST", "/graphql", body.to_string().as_bytes());
+        assert_eq!(op.parameters["id"], serde_json::json!("123")); // String, not Number
+        assert_eq!(op.parameters["flag"], serde_json::json!(true));
+        assert_eq!(op.parameters["count"], serde_json::json!(42));
     }
 
     #[test]

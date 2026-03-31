@@ -960,22 +960,21 @@ fn check_daily_limit(
 
     let counter_key = CounterStore::key(&state.session_id, provider, "daily_spend_cents");
 
-    // Check: would adding this amount exceed the limit?
-    let current = state.counter_store.get(&counter_key);
-    if current + amount > daily_limit {
-        return crate::policy::Decision {
+    // Atomic check-and-increment to avoid TOCTOU race.
+    match state
+        .counter_store
+        .increment_if_under(&counter_key, amount, daily_limit)
+    {
+        Ok(_) => decision,
+        Err(current) => crate::policy::Decision {
             allowed: false,
             reason: format!(
                 "daily spend {} + {} would exceed daily_limit_cents {}",
                 current, amount, daily_limit
             ),
             matched_rule: "daily_limit_cents".to_string(),
-        };
+        },
     }
-
-    // Allowed — increment the counter.
-    state.counter_store.increment(&counter_key, amount);
-    decision
 }
 
 // ---------------------------------------------------------------------------

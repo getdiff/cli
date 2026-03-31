@@ -37,8 +37,7 @@ pub fn resolve_hostname(
 ) -> Option<String> {
     // 1. Try the Host header.
     if let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) {
-        // Strip port if present.
-        let hostname = host.split(':').next().unwrap_or(host);
+        let hostname = extract_hostname(host);
         if !hostname.is_empty() {
             return Some(hostname.to_string());
         }
@@ -50,6 +49,26 @@ pub fn resolve_hostname(
     //    TODO: Implement SO_ORIGINAL_DST via a custom axum extractor.
 
     None
+}
+
+/// Extract hostname from a Host header value, handling IPv6 bracket notation.
+/// - `"api.github.com"` → `"api.github.com"`
+/// - `"api.github.com:443"` → `"api.github.com"`
+/// - `"[2001:db8::1]:443"` → `"2001:db8::1"`
+/// - `"[::1]"` → `"::1"`
+fn extract_hostname(host: &str) -> &str {
+    // IPv6 bracket notation: [addr] or [addr]:port
+    if host.starts_with('[') {
+        return match host.find(']') {
+            Some(end) => &host[1..end],
+            None => host, // malformed, return as-is
+        };
+    }
+    // Regular host:port — split at last ':' to avoid splitting IPv6 bare addresses.
+    match host.rfind(':') {
+        Some(pos) => &host[..pos],
+        None => host,
+    }
 }
 
 /// Read the original destination from a redirected TCP socket on Linux.
@@ -142,10 +161,14 @@ pub fn generate_iptables_init(
     script.push_str("# Skip loopback traffic\n");
     script.push_str("iptables -t nat -A GATEWAY_OUTPUT -o lo -j RETURN\n");
 
-    // Skip excluded ports.
-    if !excluded_ports.is_empty() {
+    // Skip excluded ports (validated as numeric to prevent injection).
+    let valid_ports: Vec<u16> = excluded_ports
+        .iter()
+        .filter_map(|p| p.parse::<u16>().ok())
+        .collect();
+    if !valid_ports.is_empty() {
         script.push_str("\n# Excluded ports\n");
-        for port in excluded_ports {
+        for port in &valid_ports {
             script.push_str(&format!(
                 "iptables -t nat -A GATEWAY_OUTPUT -p tcp --dport {} -j RETURN\n",
                 port
@@ -204,10 +227,54 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_hostname_ipv6_bracket() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("host", "[2001:db8::1]:443".parse().unwrap());
+
+        let host = resolve_hostname(&headers, None);
+        assert_eq!(host, Some("2001:db8::1".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_hostname_ipv6_bracket_no_port() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("host", "[::1]".parse().unwrap());
+
+        let host = resolve_hostname(&headers, None);
+        assert_eq!(host, Some("::1".to_string()));
+    }
+
+    #[test]
     fn test_resolve_hostname_missing_header() {
         let headers = axum::http::HeaderMap::new();
         let host = resolve_hostname(&headers, None);
         assert!(host.is_none());
+    }
+
+    #[test]
+    fn test_extract_hostname_variants() {
+        assert_eq!(extract_hostname("api.github.com"), "api.github.com");
+        assert_eq!(extract_hostname("api.github.com:443"), "api.github.com");
+        assert_eq!(extract_hostname("[2001:db8::1]:443"), "2001:db8::1");
+        assert_eq!(extract_hostname("[::1]"), "::1");
+    }
+
+    #[test]
+    fn test_iptables_rejects_invalid_ports() {
+        let script = generate_iptables_init(
+            8080,
+            1337,
+            &[
+                "22".to_string(),
+                "not-a-port".to_string(),
+                "15090".to_string(),
+                "; rm -rf /".to_string(),
+            ],
+        );
+        assert!(script.contains("--dport 22"));
+        assert!(script.contains("--dport 15090"));
+        assert!(!script.contains("not-a-port"));
+        assert!(!script.contains("rm -rf"));
     }
 
     #[test]

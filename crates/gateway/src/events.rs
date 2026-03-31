@@ -79,8 +79,11 @@ fn is_false(v: &bool) -> bool {
     !v
 }
 
+/// Current schema version for events. Used in both individual events and batch envelopes.
+pub const SCHEMA_VERSION: u32 = 1;
+
 fn default_schema_version() -> u32 {
-    1
+    SCHEMA_VERSION
 }
 
 /// Server response for a batch submission.
@@ -294,7 +297,7 @@ async fn flush(client: &reqwest::Client, config: &EventShipperConfig, buffer: &m
     let mut sent = 0usize;
     for chunk in buffer.chunks(1000) {
         let batch = EventBatch {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             daemon_id: config.daemon_id.clone(),
             events: chunk.to_vec(),
         };
@@ -363,7 +366,7 @@ impl Event {
         intersection_rules: Option<Vec<String>>,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             timestamp: audit.timestamp.clone(),
             session_id: audit.session_id.clone(),
             provider: audit.provider.clone(),
@@ -452,10 +455,10 @@ mod tests {
     #[test]
     fn test_event_batch_serialization() {
         let batch = EventBatch {
-            schema_version: 1,
+            schema_version: SCHEMA_VERSION,
             daemon_id: "test-host-abc123".to_string(),
             events: vec![Event {
-                schema_version: 1,
+                schema_version: SCHEMA_VERSION,
                 timestamp: "2026-03-30T14:22:01.123Z".to_string(),
                 session_id: "sess-a1b2c3".to_string(),
                 provider: "github".to_string(),
@@ -576,7 +579,7 @@ mod tests {
         // Send 50 events quickly — should not block or panic.
         for i in 0..50 {
             sender.send(Event {
-                schema_version: 1,
+                schema_version: SCHEMA_VERSION,
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 session_id: "test".to_string(),
                 provider: "github".to_string(),

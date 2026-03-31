@@ -57,7 +57,11 @@ impl CounterStore {
 
     /// Increment a counter by the given amount. Creates the entry with
     /// the default TTL if it doesn't exist. Returns the new value.
+    /// Non-positive amounts are ignored (returns current value).
     pub fn increment(&self, key: &str, amount: i64) -> i64 {
+        if amount <= 0 {
+            return self.get(key);
+        }
         let mut entries = self.entries.lock().unwrap();
         let now = Instant::now();
 
@@ -74,12 +78,16 @@ impl CounterStore {
             entry.expires_at = now + self.default_ttl;
         }
 
-        entry.value += amount;
+        entry.value = entry.value.saturating_add(amount);
         entry.value
     }
 
     /// Increment with a custom TTL (overrides default for this key if new).
+    /// Non-positive amounts are ignored (returns current value).
     pub fn increment_with_ttl(&self, key: &str, amount: i64, ttl: Duration) -> i64 {
+        if amount <= 0 {
+            return self.get(key);
+        }
         let mut entries = self.entries.lock().unwrap();
         let now = Instant::now();
 
@@ -95,8 +103,39 @@ impl CounterStore {
             entry.expires_at = now + ttl;
         }
 
-        entry.value += amount;
+        entry.value = entry.value.saturating_add(amount);
         entry.value
+    }
+
+    /// Atomically check whether incrementing by `amount` would exceed `limit`,
+    /// and if not, increment. Returns `Ok(new_value)` on success or
+    /// `Err(current_value)` if the limit would be exceeded.
+    pub fn increment_if_under(&self, key: &str, amount: i64, limit: i64) -> Result<i64, i64> {
+        if amount <= 0 {
+            let current = self.get(key);
+            return Ok(current);
+        }
+        let mut entries = self.entries.lock().unwrap();
+        let now = Instant::now();
+
+        let entry = entries
+            .entry(key.to_string())
+            .or_insert_with(|| CounterEntry {
+                value: 0,
+                expires_at: now + self.default_ttl,
+            });
+
+        if entry.expires_at <= now {
+            entry.value = 0;
+            entry.expires_at = now + self.default_ttl;
+        }
+
+        if entry.value.saturating_add(amount) > limit {
+            return Err(entry.value);
+        }
+
+        entry.value = entry.value.saturating_add(amount);
+        Ok(entry.value)
     }
 
     /// Remove expired entries. Called periodically to prevent unbounded growth.
@@ -223,5 +262,57 @@ mod tests {
         let val = store.increment_with_ttl(key, 42, Duration::from_secs(3600));
         assert_eq!(val, 42);
         assert_eq!(store.get(key), 42);
+    }
+
+    #[test]
+    fn test_negative_amount_ignored() {
+        let store = CounterStore::daily();
+        let key = "test:negative";
+
+        store.increment(key, 100);
+        assert_eq!(store.increment(key, -50), 100); // no change
+        assert_eq!(store.get(key), 100);
+    }
+
+    #[test]
+    fn test_zero_amount_ignored() {
+        let store = CounterStore::daily();
+        let key = "test:zero";
+
+        store.increment(key, 100);
+        assert_eq!(store.increment(key, 0), 100); // no change
+    }
+
+    #[test]
+    fn test_increment_if_under_allows() {
+        let store = CounterStore::daily();
+        let key = "test:under";
+
+        assert_eq!(store.increment_if_under(key, 300, 1000), Ok(300));
+        assert_eq!(store.increment_if_under(key, 400, 1000), Ok(700));
+        assert_eq!(store.get(key), 700);
+    }
+
+    #[test]
+    fn test_increment_if_under_rejects() {
+        let store = CounterStore::daily();
+        let key = "test:over";
+
+        store.increment_if_under(key, 800, 1000).unwrap();
+        // 800 + 300 > 1000
+        assert_eq!(store.increment_if_under(key, 300, 1000), Err(800));
+        // Counter should NOT have been incremented.
+        assert_eq!(store.get(key), 800);
+    }
+
+    #[test]
+    fn test_saturating_add_no_overflow() {
+        let store = CounterStore::daily();
+        let key = "test:overflow";
+
+        store.increment(key, i64::MAX - 10);
+        // Should saturate, not wrap.
+        let val = store.increment(key, 100);
+        assert_eq!(val, i64::MAX);
     }
 }
