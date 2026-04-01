@@ -161,27 +161,48 @@ async fn fetch_credential(
 // Sync loop
 // ---------------------------------------------------------------------------
 
+/// Build the reqwest client used for platform API calls.
+fn build_sync_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+/// Perform the initial config sync before serving traffic. Returns `Ok(())`
+/// on success (or if the platform is unreachable — we fall back to local
+/// config in that case).
+pub async fn initial_sync(state: &Arc<GatewayState>, control_plane_url: &str, api_token: &str) {
+    if control_plane_url.is_empty() || api_token.is_empty() {
+        return;
+    }
+    let client = build_sync_client();
+    if let Err(e) = sync_once(&client, control_plane_url, api_token, state).await {
+        eprintln!(
+            "[gateway] initial config sync failed (starting with local config): {}",
+            e
+        );
+    }
+}
+
 /// Spawn the background daemon config sync loop. Does nothing if the control
-/// plane URL or API token is empty.
+/// plane URL or API token is empty. Call `initial_sync` first to populate
+/// config before accepting traffic.
 pub fn spawn_config_sync(state: Arc<GatewayState>, control_plane_url: String, api_token: String) {
     if control_plane_url.is_empty() || api_token.is_empty() {
         return;
     }
 
     tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-
-        // Short delay before first sync to let startup complete.
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        let client = build_sync_client();
 
         loop {
+            tokio::time::sleep(SYNC_INTERVAL).await;
             if let Err(e) = sync_once(&client, &control_plane_url, &api_token, &state).await {
                 eprintln!("[gateway] config sync: {}", e);
             }
-            tokio::time::sleep(SYNC_INTERVAL).await;
         }
     });
 }
@@ -266,12 +287,23 @@ fn apply_daemon_config(state: &GatewayState, config: &DaemonConfigResponse) {
         platform.policies = policies;
     }
 
-    // Update path-prefix proxy provider evaluators with platform policies.
-    if !config.policies.is_empty() {
+    // Reconcile path-prefix proxy provider evaluators with platform policies.
+    // Providers with a platform policy get that policy; providers whose policy
+    // was removed get reset to a permissive default.
+    {
+        let platform_policies: HashMap<String, &PlatformPolicy> = config
+            .policies
+            .iter()
+            .map(|p| (p.provider.clone(), p))
+            .collect();
         let mut providers = state.providers.write().unwrap();
-        for p in &config.policies {
-            if let Some(entry) = providers.get_mut(&p.provider) {
+        for (name, entry) in providers.iter_mut() {
+            if let Some(p) = platform_policies.get(name) {
                 entry.evaluator = PolicyEvaluator::new(p.rules.clone());
+            } else if config.mode == "enforce" {
+                // Policy was removed — reset to permissive default so removed
+                // policies stop being enforced.
+                entry.evaluator = PolicyEvaluator::new(PolicyConfig::default());
             }
         }
     }

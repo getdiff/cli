@@ -109,9 +109,16 @@ impl GatewayState {
     }
 
     /// Look up a platform credential for a provider (for forward proxy injection).
+    /// Returns `None` if the credential has expired (TTL 5 minutes).
     pub fn platform_credential(&self, provider: &str) -> Option<String> {
         let platform = self.platform.read().unwrap();
-        platform.credentials.get(provider).map(|c| c.value.clone())
+        platform.credentials.get(provider).and_then(|c| {
+            if c.fetched_at.elapsed() < std::time::Duration::from_secs(300) {
+                Some(c.value.clone())
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -300,7 +307,8 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         platform: RwLock::new(PlatformConfig::default()),
     });
 
-    // Spawn background config sync (fetches mode, policies, credentials from platform).
+    // Perform initial config sync before accepting traffic, then spawn background loop.
+    crate::daemon_config::initial_sync(&state, &control_plane_url, &api_token).await;
     crate::daemon_config::spawn_config_sync(state.clone(), control_plane_url.clone(), api_token);
 
     let addr = format!("0.0.0.0:{}", port);
