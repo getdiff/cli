@@ -23,6 +23,7 @@ use crate::adapter::{ParsedOperation, Registry};
 use crate::audit::{AuditEvent, AuditFilter, AuditLogger};
 use crate::config::{GatewayConfig, PolicyConfig};
 use crate::counter::CounterStore;
+use crate::daemon_config::PlatformConfig;
 use crate::events::{self, EventSender, EventShipperConfig};
 use crate::harvester::Harvester;
 use crate::intersection::{compute_intersections, merge_intersections, rules_from_config};
@@ -88,6 +89,30 @@ pub struct GatewayState {
     pub intersection_rules: Vec<crate::intersection::IntersectionRule>,
     /// In-memory counter store for aggregate policy limits (e.g. daily_limit_cents).
     pub counter_store: CounterStore,
+    /// Platform-synced configuration (mode, policies, credentials).
+    /// Updated by the background config sync task in `daemon_config.rs`.
+    pub platform: RwLock<PlatformConfig>,
+}
+
+impl GatewayState {
+    /// Returns the effective learning mode, considering the platform config.
+    /// When the platform sets mode to "enforce", learning mode is disabled.
+    pub fn is_learning_mode(&self) -> bool {
+        let platform = self.platform.read().unwrap();
+        if platform.org_id.is_some() {
+            // Platform config is active — mode determines behavior.
+            platform.mode != "enforce"
+        } else {
+            // No platform config — use local config.
+            self.learning_mode
+        }
+    }
+
+    /// Look up a platform credential for a provider (for forward proxy injection).
+    pub fn platform_credential(&self, provider: &str) -> Option<String> {
+        let platform = self.platform.read().unwrap();
+        platform.credentials.get(provider).map(|c| c.value.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +297,11 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         active_intersection_names,
         intersection_rules,
         counter_store: CounterStore::daily(),
+        platform: RwLock::new(PlatformConfig::default()),
     });
+
+    // Spawn background config sync (fetches mode, policies, credentials from platform).
+    crate::daemon_config::spawn_config_sync(state.clone(), control_plane_url.clone(), api_token);
 
     let addr = format!("0.0.0.0:{}", port);
     eprintln!("gateway proxy listening on {}", addr);
@@ -443,8 +472,9 @@ async fn handle_proxy_request(
     let decision = check_daily_limit(&state, &provider_name, &parsed.parameters, decision);
 
     // 8. Handle policy decision.
+    let effective_learning_mode = state.is_learning_mode();
     if !decision.allowed {
-        if state.learning_mode {
+        if effective_learning_mode {
             // Learning mode: log would-block but forward anyway.
             state.profiler.record(
                 &state.session_id,
@@ -515,7 +545,7 @@ async fn handle_proxy_request(
             reason: &decision.reason,
             matched_rule: &decision.matched_rule,
             response_status: 403,
-            learning_mode: state.learning_mode,
+            learning_mode: effective_learning_mode,
             would_block: false,
             would_reason: "",
             body_hash: body_hash.clone(),
@@ -572,7 +602,7 @@ async fn handle_proxy_request(
                 reason: &decision.reason,
                 matched_rule: &decision.matched_rule,
                 response_status: status_code,
-                learning_mode: state.learning_mode,
+                learning_mode: effective_learning_mode,
                 would_block: false,
                 would_reason: "",
                 body_hash,
@@ -601,7 +631,7 @@ async fn handle_proxy_request(
                 reason: "upstream error",
                 matched_rule: "",
                 response_status: 502,
-                learning_mode: state.learning_mode,
+                learning_mode: effective_learning_mode,
                 would_block: false,
                 would_reason: "",
                 body_hash,
@@ -1285,6 +1315,7 @@ mod tests {
             active_intersection_names: vec![],
             intersection_rules: vec![],
             counter_store: CounterStore::daily(),
+            platform: RwLock::new(PlatformConfig::default()),
         })
     }
 
