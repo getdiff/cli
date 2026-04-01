@@ -78,7 +78,8 @@ pub fn extract_target_host(method: &Method, uri: &Uri) -> Option<String> {
 
 /// Handle an HTTP forward proxy request (absolute-URI, not CONNECT).
 ///
-/// Forwards the request to the upstream, logs an audit event.
+/// Classifies the provider by hostname, evaluates platform policies (if any),
+/// injects platform credentials, forwards the request, and logs an audit event.
 pub async fn handle_forward_proxy(
     state: &Arc<GatewayState>,
     method: Method,
@@ -87,6 +88,7 @@ pub async fn handle_forward_proxy(
     body: Bytes,
 ) -> Response {
     let start = Instant::now();
+    let learning_mode = state.is_learning_mode();
 
     let hostname = match extract_target_host(&method, &uri) {
         Some(h) => h,
@@ -103,10 +105,114 @@ pub async fn handle_forward_proxy(
     let path = uri.path().to_string();
     let query_string = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
+    // Try to find adapter for this provider and parse operation + parameters.
+    let adapter = state.adapter_registry.find_by_name(&provider);
+    let (operation, parameters) = match &adapter {
+        Some(a) => {
+            let parsed = a.parse_request(method.as_str(), &path, &body);
+            let op = if parsed.operation != "unknown" {
+                Some(parsed.operation)
+            } else {
+                None
+            };
+            let params = if parsed.parameters.is_empty() {
+                None
+            } else {
+                Some(parsed.parameters)
+            };
+            (op, params)
+        }
+        None => (None, None),
+    };
+
+    // Evaluate platform policy for this provider (if one exists).
+    let policy_decision = {
+        let platform = state.platform.read().unwrap();
+        platform.policies.get(&provider).map(|evaluator| {
+            let empty_params = std::collections::HashMap::new();
+            let params_ref = parameters.as_ref().unwrap_or(&empty_params);
+            evaluator.evaluate(
+                method.as_str(),
+                &path,
+                operation.as_deref().unwrap_or(""),
+                params_ref,
+            )
+        })
+    };
+
+    // If policy denies and we're in enforce mode, block the request.
+    let (would_block, would_reason, policy_rule) = if let Some(ref decision) = policy_decision
+        && !decision.allowed
+    {
+        if !learning_mode {
+            // Enforce mode: block the request.
+            let body_hash = events::hash_request_body(&body);
+            let latency_ms = start.elapsed().as_millis() as u64;
+            let mut event = events::Event {
+                schema_version: events::SCHEMA_VERSION,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: state.session_id.clone(),
+                provider: provider.clone(),
+                method: method.to_string(),
+                path: path.clone(),
+                decision: "denied".to_string(),
+                operation: operation.clone(),
+                agent_type: state.agent_type.clone(),
+                org_id: None,
+                task_id: None,
+                environment: state.environment.clone(),
+                learning_mode: false,
+                would_block: false,
+                would_reason: None,
+                parameters: parameters
+                    .as_ref()
+                    .and_then(|p| serde_json::to_value(p).ok()),
+                request_body_hash: body_hash,
+                mcp_tool_name: None,
+                mcp_server: None,
+                intersection_rules: None,
+                policy_rule: Some(decision.matched_rule.clone()),
+                response_status: Some(403),
+                latency_ms: Some(latency_ms),
+                credential_id: None,
+                credential_ttl: None,
+            };
+            crate::proxy::enrich_event(&mut event, state, &provider, None);
+            state.event_sender.send(event);
+
+            eprintln!(
+                "[proxy] {} {} {} → 403 denied: {} ({}ms)",
+                method, hostname, path, decision.reason, latency_ms
+            );
+
+            return (
+                StatusCode::FORBIDDEN,
+                axum::Json(json!({
+                    "error": "blocked by policy",
+                    "reason": decision.reason,
+                    "rule": decision.matched_rule,
+                    "provider": provider,
+                })),
+            )
+                .into_response();
+        }
+        // Observe mode: note would-block but continue forwarding.
+        (
+            true,
+            Some(decision.reason.clone()),
+            Some(decision.matched_rule.clone()),
+        )
+    } else {
+        (false, None, None)
+    };
+
     // Reconstruct the upstream URL.
     let scheme = uri.scheme_str().unwrap_or("http");
     let authority = uri.authority().map(|a| a.as_str()).unwrap_or(&hostname);
     let upstream_url = format!("{}://{}{}{}", scheme, authority, path, query_string);
+
+    // Look up platform credential for this provider.
+    let platform_credential = state.platform_credential(&provider);
 
     // Build request to upstream.
     let client = &state.http_client;
@@ -123,6 +229,9 @@ pub async fn handle_forward_proxy(
         .unwrap_or_default();
 
     // Copy headers, stripping hop-by-hop headers per RFC 7230 §6.1.
+    // If we have a platform credential, also skip the Authorization header
+    // (we'll inject the platform credential instead).
+    let has_platform_cred = platform_credential.is_some();
     for (key, value) in headers.iter() {
         let name = key.as_str().to_lowercase();
         if matches!(
@@ -140,8 +249,20 @@ pub async fn handle_forward_proxy(
         {
             continue;
         }
+        // Skip auth headers when platform credential will be injected.
+        if has_platform_cred && name == "authorization" {
+            continue;
+        }
         req = req.header(key.clone(), value.clone());
     }
+
+    // Inject platform credential.
+    let credential_id = if let Some(ref cred) = platform_credential {
+        req = req.header("Authorization", format!("Bearer {}", cred));
+        Some("platform_secret".to_string())
+    } else {
+        None
+    };
 
     if !body.is_empty() {
         req = req.body(body.to_vec());
@@ -205,9 +326,8 @@ pub async fn handle_forward_proxy(
 
     // Log audit event.
     let latency_ms = start.elapsed().as_millis() as u64;
-    // In forward proxy mode, all traffic is allowed (observe-only).
-    // Policy enforcement will be added in the deep-observe phase.
-    let decision = "allowed";
+    // In observe mode, even would-block requests are forwarded and logged as "allowed".
+    let decision_str = "allowed";
     let mut event = events::Event {
         schema_version: events::SCHEMA_VERSION,
         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -215,46 +335,42 @@ pub async fn handle_forward_proxy(
         provider: provider.clone(),
         method: method.to_string(),
         path: path.clone(),
-        decision: decision.to_string(),
-        operation: None,
+        decision: decision_str.to_string(),
+        operation,
         agent_type: state.agent_type.clone(),
         org_id: None,
         task_id: None,
         environment: state.environment.clone(),
-        learning_mode: state.learning_mode,
-        would_block: false,
-        would_reason: None,
-        parameters: None,
+        learning_mode,
+        would_block,
+        would_reason,
+        parameters: parameters
+            .as_ref()
+            .and_then(|p| serde_json::to_value(p).ok()),
         request_body_hash: body_hash,
         mcp_tool_name: None,
         mcp_server: None,
         intersection_rules: None,
-        policy_rule: None,
+        policy_rule,
         response_status: Some(response_status),
         latency_ms: Some(latency_ms),
-        credential_id: None,
+        credential_id,
         credential_ttl: None,
     };
-
-    // Try to find adapter for this provider and parse operation.
-    let adapter = state.adapter_registry.find_by_name(&provider);
-    if let Some(a) = &adapter {
-        let parsed = a.parse_request(method.as_str(), &path, &body);
-        if parsed.operation != "unknown" {
-            event.operation = Some(parsed.operation);
-        }
-        if !parsed.parameters.is_empty() {
-            event.parameters = Some(serde_json::to_value(&parsed.parameters).unwrap_or_default());
-        }
-    }
 
     crate::proxy::enrich_event(&mut event, state, &provider, None);
     state.event_sender.send(event);
 
     // Log to stderr.
+    let block_note = if would_block { " [would_block]" } else { "" };
+    let cred_note = if has_platform_cred {
+        " [injected cred]"
+    } else {
+        ""
+    };
     eprintln!(
-        "[proxy] {} {} {} → {} ({}ms)",
-        method, hostname, path, response_status, latency_ms
+        "[proxy] {} {} {} → {} ({}ms){}{}",
+        method, hostname, path, response_status, latency_ms, block_note, cred_note
     );
 
     response
@@ -353,6 +469,7 @@ async fn handle_connect_tunnel(
     use tokio::io::AsyncWriteExt;
 
     let start = Instant::now();
+    let learning_mode = state.is_learning_mode();
 
     // Read the CONNECT request line + headers (until blank line).
     // We read raw bytes to avoid BufReader buffering issues.
@@ -418,7 +535,7 @@ async fn handle_connect_tunnel(
                 org_id: None,
                 task_id: None,
                 environment: state.environment.clone(),
-                learning_mode: state.learning_mode,
+                learning_mode,
                 would_block: false,
                 would_reason: None,
                 parameters: None,
@@ -454,7 +571,7 @@ async fn handle_connect_tunnel(
         org_id: None,
         task_id: None,
         environment: state.environment.clone(),
-        learning_mode: state.learning_mode,
+        learning_mode,
         would_block: false,
         would_reason: None,
         parameters: None,
@@ -691,6 +808,7 @@ mod tests {
             active_intersection_names: vec![],
             intersection_rules: vec![],
             counter_store: CounterStore::daily(),
+            platform: std::sync::RwLock::new(crate::daemon_config::PlatformConfig::default()),
         })
     }
 

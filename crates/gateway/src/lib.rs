@@ -2,6 +2,7 @@ pub mod adapter;
 pub mod audit;
 pub mod config;
 pub mod counter;
+pub mod daemon_config;
 pub mod events;
 pub mod forward_proxy;
 pub mod harvester;
