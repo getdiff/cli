@@ -249,8 +249,14 @@ pub async fn handle_forward_proxy(
         {
             continue;
         }
-        // Skip auth headers when platform credential will be injected.
-        if has_platform_cred && name == "authorization" {
+        // Skip auth headers when platform credential will be injected,
+        // so agent secrets aren't leaked to the upstream.
+        if has_platform_cred
+            && matches!(
+                name.as_str(),
+                "authorization" | "x-api-key" | "api-key" | "x-auth-token"
+            )
+        {
             continue;
         }
         req = req.header(key.clone(), value.clone());
@@ -327,7 +333,12 @@ pub async fn handle_forward_proxy(
     // Log audit event.
     let latency_ms = start.elapsed().as_millis() as u64;
     // In observe mode, even would-block requests are forwarded and logged as "allowed".
-    let decision_str = "allowed";
+    // If the upstream send failed (502), log as "error" to match proxy.rs convention.
+    let decision_str = if response_status == 502 {
+        "error"
+    } else {
+        "allowed"
+    };
     let mut event = events::Event {
         schema_version: events::SCHEMA_VERSION,
         timestamp: chrono::Utc::now().to_rfc3339(),
