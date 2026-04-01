@@ -256,7 +256,13 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
     let control_plane_url = std::env::var("GATEWAY_CONTROL_PLANE_URL").unwrap_or_default();
     let api_token = read_api_token();
 
-    if !control_plane_url.is_empty() && api_token.is_empty() {
+    if control_plane_url.is_empty() {
+        eprintln!(
+            "[gateway] WARNING: GATEWAY_CONTROL_PLANE_URL is not set. Running in disconnected \
+             mode — events will not be shipped, daemon will not register, and policies will \
+             not sync from the platform. Set GATEWAY_CONTROL_PLANE_URL to connect."
+        );
+    } else if api_token.is_empty() {
         eprintln!(
             "[gateway] WARNING: GATEWAY_CONTROL_PLANE_URL is set but no API token found. \
              Event shipping will fail with 401. Run `getdiff login` or set DIFF_API_KEY."
@@ -1071,10 +1077,15 @@ pub fn enrich_event(
         }
     }
 
-    // Set credential_id from the env var name.
+    // Set credential_id from the env var name or platform secret source.
     if let Some(env_var) = credential_env_var {
         event.credential_id = Some(env_var.clone());
-        event.credential_ttl = Some(0); // Unknown TTL for env-var credentials.
+        // Platform-managed secrets have a known cache TTL; env-var credentials don't.
+        event.credential_ttl = if env_var == "platform_secret" {
+            Some(300)
+        } else {
+            None
+        };
     }
 
     // Promote mcp_tool_name from parsed parameters to top-level event field.
@@ -1189,10 +1200,7 @@ async fn register_daemon(
     daemon_id: &str,
     capabilities: &[String],
 ) -> Result<(), String> {
-    let url = format!(
-        "{}/v1/daemons/register",
-        control_plane_url.trim_end_matches('/')
-    );
+    let url = format!("{}/v1/daemons", control_plane_url.trim_end_matches('/'));
 
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     let version = env!("CARGO_PKG_VERSION");

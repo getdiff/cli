@@ -44,6 +44,8 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
@@ -63,6 +65,8 @@ pub struct Event {
     pub mcp_server: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intersection_rules: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_rule: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -406,6 +410,7 @@ impl Event {
             },
             agent_type: None,
             org_id: None,
+            user_id: None,
             task_id: None,
             environment: None,
             learning_mode: audit.learning_mode,
@@ -420,6 +425,11 @@ impl Event {
             mcp_tool_name: None,
             mcp_server: None,
             intersection_rules,
+            reason: if audit.reason.is_empty() {
+                None
+            } else {
+                Some(audit.reason.clone())
+            },
             policy_rule: if audit.matched_rule.is_empty() {
                 None
             } else {
@@ -496,6 +506,7 @@ mod tests {
                 operation: Some("get_user".to_string()),
                 agent_type: None,
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,
@@ -506,6 +517,7 @@ mod tests {
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: None,
                 policy_rule: None,
                 response_status: Some(200),
                 latency_ms: Some(42),
@@ -617,6 +629,7 @@ mod tests {
                 operation: None,
                 agent_type: None,
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,
@@ -627,6 +640,7 @@ mod tests {
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: None,
                 policy_rule: None,
                 response_status: None,
                 latency_ms: None,
