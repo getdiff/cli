@@ -185,36 +185,50 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         &home.join(".claude/agents/*.md"),
         ArtifactType::Agent,
         ArtifactProvider::Claude,
-        |p| format!(".claude/agents/{}", file_name(p)),
+        |p| format!("~/.claude/agents/{}", file_name(p)),
+        None,
         None,
         &mut artifacts,
     );
 
     // Skills: ~/.claude/skills/*/SKILL.md
+    let skill_start = artifacts.len();
     scan_glob_files(
         &home.join(".claude/skills/*/SKILL.md"),
         ArtifactType::Skill,
         ArtifactProvider::Claude,
         |p| {
-            // Extract skill name from parent directory
             let parent = p.parent().and_then(|d| d.file_name()).unwrap_or_default();
-            format!(".claude/skills/{}/SKILL.md", parent.to_string_lossy())
+            format!("~/.claude/skills/{}/SKILL.md", parent.to_string_lossy())
         },
+        None,
         None,
         &mut artifacts,
     );
+    // Use parent directory name for skill display name instead of "SKILL"
+    for a in &mut artifacts[skill_start..] {
+        let parent_name = Path::new(&a.origin_path)
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !parent_name.is_empty() {
+            a.name = name_from_path(Path::new(&parent_name));
+        }
+    }
 
     // Commands (legacy, ingest as skills): ~/.claude/commands/*.md
     scan_glob_files(
         &home.join(".claude/commands/*.md"),
         ArtifactType::Skill,
         ArtifactProvider::Claude,
-        |p| format!(".claude/commands/{}", file_name(p)),
+        |p| format!("~/.claude/commands/{}", file_name(p)),
+        None,
         None,
         &mut artifacts,
     );
 
-    // Rules: ~/.claude/rules/*.md (recursive)
+    // Rules: ~/.claude/rules/**/*.md (recursive)
     scan_glob_files(
         &home.join(".claude/rules/**/*.md"),
         ArtifactType::Rule,
@@ -222,9 +236,10 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         |p| {
             let rules_dir = home.join(".claude/rules");
             let rel = p.strip_prefix(&rules_dir).unwrap_or(p);
-            format!(".claude/rules/{}", rel.to_string_lossy())
+            format!("~/.claude/rules/{}", rel.to_string_lossy())
         },
         None,
+        Some(&home.join(".claude/rules")),
         &mut artifacts,
     );
 
@@ -273,10 +288,12 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Claude,
         |p| format!(".claude/agents/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
     // Project-level skills: {project}/.claude/skills/*/SKILL.md
+    let skill_start = artifacts.len();
     scan_glob_files(
         &project_root.join(".claude/skills/*/SKILL.md"),
         ArtifactType::Skill,
@@ -286,8 +303,20 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
             format!(".claude/skills/{}/SKILL.md", parent.to_string_lossy())
         },
         Some(&project_name),
+        None,
         &mut artifacts,
     );
+    // Use parent directory name for skill display name instead of "SKILL"
+    for a in &mut artifacts[skill_start..] {
+        let parent_name = Path::new(&a.origin_path)
+            .parent()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !parent_name.is_empty() {
+            a.name = name_from_path(Path::new(&parent_name));
+        }
+    }
 
     // Project-level commands (legacy, ingest as skills): {project}/.claude/commands/*.md
     scan_glob_files(
@@ -296,6 +325,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Claude,
         |p| format!(".claude/commands/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -310,6 +340,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
             format!(".claude/rules/{}", rel.to_string_lossy())
         },
         Some(&project_name),
+        Some(&project_root.join(".claude/rules")),
         &mut artifacts,
     );
 
@@ -456,6 +487,7 @@ fn scan_codex_global() -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Codex,
         |p| format!("~/.codex/skills/{}", file_name(p)),
         None,
+        None,
         &mut artifacts,
     );
 
@@ -505,6 +537,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Cursor,
         |p| format!(".cursor/rules/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
     scan_glob_files(
@@ -513,6 +546,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Cursor,
         |p| format!(".cursor/rules/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -534,6 +568,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Cursor,
         |p| format!(".cursor/commands/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -564,6 +599,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Copilot,
         |p| format!(".github/agents/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -574,6 +610,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Copilot,
         |p| format!(".github/instructions/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -584,6 +621,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Copilot,
         |p| format!(".github/prompts/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -643,6 +681,7 @@ fn scan_windsurf_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Windsurf,
         |p| format!(".windsurf/rules/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -686,6 +725,7 @@ fn scan_amazonq_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Amazonq,
         |p| format!(".amazonq/agents/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -696,6 +736,7 @@ fn scan_amazonq_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         ArtifactProvider::Amazonq,
         |p| format!(".amazonq/rules/{}", file_name(p)),
         Some(&project_name),
+        None,
         &mut artifacts,
     );
 
@@ -817,6 +858,7 @@ fn scan_glob_files(
     provider: ArtifactProvider,
     origin_path_fn: impl Fn(&Path) -> String,
     project: Option<&str>,
+    boundary: Option<&Path>,
     artifacts: &mut Vec<ScannedArtifact>,
 ) {
     let pattern_str = pattern.to_string_lossy().to_string();
@@ -824,18 +866,23 @@ fn scan_glob_files(
         Ok(e) => e,
         Err(_) => return,
     };
+
+    // Compute canonical boundary once: prefer explicit boundary, fall back to pattern parent
+    let canonical_boundary = boundary
+        .and_then(|b| b.canonicalize().ok())
+        .or_else(|| pattern.parent().and_then(|p| p.canonicalize().ok()));
+
     for entry in entries.flatten() {
-        // Skip symlinks pointing outside the pattern's parent directory
-        if entry.is_symlink()
-            && let (Ok(canonical), Some(parent)) = (entry.canonicalize(), pattern.parent())
-            && let Ok(canonical_parent) = parent.canonicalize()
-            && !canonical.starts_with(&canonical_parent)
-        {
-            eprintln!(
-                "  Skipping symlink outside project boundary: {}",
-                entry.display()
-            );
-            continue;
+        // Validate entry is within the boundary (prevents symlink escapes)
+        if let Some(ref cb) = canonical_boundary {
+            match entry.canonicalize() {
+                Ok(canonical_entry) if !canonical_entry.starts_with(cb) => {
+                    eprintln!("  Skipping file outside boundary: {}", entry.display());
+                    continue;
+                }
+                Err(_) => continue,
+                _ => {}
+            }
         }
         if let Ok(content) = std::fs::read_to_string(&entry) {
             if content.trim().is_empty() {

@@ -416,18 +416,29 @@ fn resolve_install_path(
 }
 
 fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> PathBuf {
+    // Project-scoped artifacts have relative paths (e.g., ".claude/agents/review.md").
+    // Global artifacts have tilde-prefixed paths (e.g., "~/.claude/agents/review.md")
+    // which are expanded before reaching this function. If we get here with a
+    // ".claude/" prefix, it's project-scoped — keep it relative to the project root.
+    let is_project_scoped =
+        origin_path.starts_with(".claude/") && !origin_path.starts_with(".claude/projects/");
+
     match artifact_type {
         "agent" => {
-            let filename = Path::new(origin_path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            home.join(".claude/agents").join(filename.as_ref())
+            if is_project_scoped {
+                PathBuf::from(origin_path)
+            } else {
+                let filename = Path::new(origin_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                home.join(".claude/agents").join(filename.as_ref())
+            }
         }
         "skill" => {
-            // Skills live in .claude/skills/{name}/SKILL.md
-            // origin_path is like .claude/skills/review/SKILL.md or .claude/commands/review.md
-            if origin_path.contains("/commands/") {
+            if is_project_scoped {
+                PathBuf::from(origin_path)
+            } else if origin_path.contains("/commands/") {
                 // Legacy command: resolve to skills directory
                 let stem = Path::new(origin_path)
                     .file_stem()
@@ -440,7 +451,13 @@ fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> P
                 home.join(origin_path)
             }
         }
-        "rule" => home.join(origin_path),
+        "rule" => {
+            if is_project_scoped {
+                PathBuf::from(origin_path)
+            } else {
+                home.join(origin_path)
+            }
+        }
         "hook" | "mcp" => home.join(".claude/settings.json"),
         "memory" => home.join(origin_path),
         _ => PathBuf::from(origin_path),
@@ -851,9 +868,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_claude_agent_path() {
-        let home = dirs::home_dir().unwrap();
+    fn test_resolve_claude_agent_path_project_scoped() {
+        // Project-scoped agents (.claude/ prefix) stay relative to project root
         let path = resolve_install_path("claude", ".claude/agents/review.md", "agent").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/agents/review.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_agent_path_global() {
+        // Global agents (~/.claude/ prefix) expand to home directory
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/agents/review.md", "agent").unwrap();
         assert_eq!(path, home.join(".claude/agents/review.md"));
     }
 
