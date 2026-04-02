@@ -424,6 +424,23 @@ fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> P
                 .to_string_lossy();
             home.join(".claude/agents").join(filename.as_ref())
         }
+        "skill" => {
+            // Skills live in .claude/skills/{name}/SKILL.md
+            // origin_path is like .claude/skills/review/SKILL.md or .claude/commands/review.md
+            if origin_path.contains("/commands/") {
+                // Legacy command: resolve to skills directory
+                let stem = Path::new(origin_path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                home.join(".claude/skills")
+                    .join(stem.as_ref())
+                    .join("SKILL.md")
+            } else {
+                home.join(origin_path)
+            }
+        }
+        "rule" => home.join(origin_path),
         "hook" | "mcp" => home.join(".claude/settings.json"),
         "memory" => home.join(origin_path),
         _ => PathBuf::from(origin_path),

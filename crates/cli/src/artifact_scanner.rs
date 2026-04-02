@@ -7,20 +7,26 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactType {
     Agent,
+    Skill,
+    Rule,
     SystemPrompt,
     Mcp,
     Memory,
     Hook,
+    Plugin,
 }
 
 impl ArtifactType {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Agent => "agent",
+            Self::Skill => "skill",
+            Self::Rule => "rule",
             Self::SystemPrompt => "system_prompt",
             Self::Mcp => "mcp",
             Self::Memory => "memory",
             Self::Hook => "hook",
+            Self::Plugin => "plugin",
         }
     }
 }
@@ -174,7 +180,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
     let home = home_dir()?;
     let mut artifacts = Vec::new();
 
-    // Agents: ~/.claude/agents/*.md
+    // Agents (subagents): ~/.claude/agents/*.md
     scan_glob_files(
         &home.join(".claude/agents/*.md"),
         ArtifactType::Agent,
@@ -184,15 +190,53 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         &mut artifacts,
     );
 
-    // Commands: ~/.claude/commands/*.md
+    // Skills: ~/.claude/skills/*/SKILL.md
+    scan_glob_files(
+        &home.join(".claude/skills/*/SKILL.md"),
+        ArtifactType::Skill,
+        ArtifactProvider::Claude,
+        |p| {
+            // Extract skill name from parent directory
+            let parent = p.parent().and_then(|d| d.file_name()).unwrap_or_default();
+            format!(".claude/skills/{}/SKILL.md", parent.to_string_lossy())
+        },
+        None,
+        &mut artifacts,
+    );
+
+    // Commands (legacy, ingest as skills): ~/.claude/commands/*.md
     scan_glob_files(
         &home.join(".claude/commands/*.md"),
-        ArtifactType::Agent,
+        ArtifactType::Skill,
         ArtifactProvider::Claude,
         |p| format!(".claude/commands/{}", file_name(p)),
         None,
         &mut artifacts,
     );
+
+    // Rules: ~/.claude/rules/*.md (recursive)
+    scan_glob_files(
+        &home.join(".claude/rules/**/*.md"),
+        ArtifactType::Rule,
+        ArtifactProvider::Claude,
+        |p| {
+            let rules_dir = home.join(".claude/rules");
+            let rel = p.strip_prefix(&rules_dir).unwrap_or(p);
+            format!(".claude/rules/{}", rel.to_string_lossy())
+        },
+        None,
+        &mut artifacts,
+    );
+
+    // User-level system prompt: ~/.claude/CLAUDE.md
+    if let Some(a) = scan_single_file(
+        &home.join(".claude/CLAUDE.md"),
+        ArtifactType::SystemPrompt,
+        ArtifactProvider::Claude,
+        "~/.claude/CLAUDE.md",
+    ) {
+        artifacts.push(a);
+    }
 
     // Settings (hooks + MCP): ~/.claude/settings.json
     scan_claude_settings(&home.join(".claude/settings.json"), &mut artifacts);
@@ -221,6 +265,53 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         a.origin_project = Some(project_name.clone());
         artifacts.push(a);
     }
+
+    // Project-level agents: {project}/.claude/agents/*.md
+    scan_glob_files(
+        &project_root.join(".claude/agents/*.md"),
+        ArtifactType::Agent,
+        ArtifactProvider::Claude,
+        |p| format!(".claude/agents/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+
+    // Project-level skills: {project}/.claude/skills/*/SKILL.md
+    scan_glob_files(
+        &project_root.join(".claude/skills/*/SKILL.md"),
+        ArtifactType::Skill,
+        ArtifactProvider::Claude,
+        |p| {
+            let parent = p.parent().and_then(|d| d.file_name()).unwrap_or_default();
+            format!(".claude/skills/{}/SKILL.md", parent.to_string_lossy())
+        },
+        Some(&project_name),
+        &mut artifacts,
+    );
+
+    // Project-level commands (legacy, ingest as skills): {project}/.claude/commands/*.md
+    scan_glob_files(
+        &project_root.join(".claude/commands/*.md"),
+        ArtifactType::Skill,
+        ArtifactProvider::Claude,
+        |p| format!(".claude/commands/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+
+    // Project-level rules: {project}/.claude/rules/**/*.md
+    scan_glob_files(
+        &project_root.join(".claude/rules/**/*.md"),
+        ArtifactType::Rule,
+        ArtifactProvider::Claude,
+        |p| {
+            let rules_dir = project_root.join(".claude/rules");
+            let rel = p.strip_prefix(&rules_dir).unwrap_or(p);
+            format!(".claude/rules/{}", rel.to_string_lossy())
+        },
+        Some(&project_name),
+        &mut artifacts,
+    );
 
     // Project-level settings: {project}/.claude/settings.local.json
     scan_claude_settings_project(
@@ -361,7 +452,7 @@ fn scan_codex_global() -> Result<Vec<ScannedArtifact>> {
     // Skills: ~/.codex/skills/*.md
     scan_glob_files(
         &home.join(".codex/skills/*.md"),
-        ArtifactType::Agent,
+        ArtifactType::Skill,
         ArtifactProvider::Codex,
         |p| format!("~/.codex/skills/{}", file_name(p)),
         None,
@@ -407,17 +498,25 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
     let mut artifacts = Vec::new();
     let project_name = project_dir_name(project_root);
 
-    // Rules: {project}/.cursor/rules/*.mdc
+    // Rules (modern): {project}/.cursor/rules/*.mdc and *.md
     scan_glob_files(
         &project_root.join(".cursor/rules/*.mdc"),
-        ArtifactType::SystemPrompt,
+        ArtifactType::Rule,
+        ArtifactProvider::Cursor,
+        |p| format!(".cursor/rules/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+    scan_glob_files(
+        &project_root.join(".cursor/rules/*.md"),
+        ArtifactType::Rule,
         ArtifactProvider::Cursor,
         |p| format!(".cursor/rules/{}", file_name(p)),
         Some(&project_name),
         &mut artifacts,
     );
 
-    // Legacy: {project}/.cursorrules (root-level file, origin_path stays as-is)
+    // Legacy system prompt: {project}/.cursorrules
     if let Some(mut a) = scan_single_file(
         &project_root.join(".cursorrules"),
         ArtifactType::SystemPrompt,
@@ -427,6 +526,16 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         a.origin_project = Some(project_name.clone());
         artifacts.push(a);
     }
+
+    // Commands (ingest as skills): {project}/.cursor/commands/*.md
+    scan_glob_files(
+        &project_root.join(".cursor/commands/*.md"),
+        ArtifactType::Skill,
+        ArtifactProvider::Cursor,
+        |p| format!(".cursor/commands/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
 
     // MCP: {project}/.cursor/mcp.json (with credential redaction)
     scan_json_mcp_file(
@@ -458,12 +567,43 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         &mut artifacts,
     );
 
+    // Path-scoped instructions (rules): {project}/.github/instructions/*.instructions.md
+    scan_glob_files(
+        &project_root.join(".github/instructions/*.instructions.md"),
+        ArtifactType::Rule,
+        ArtifactProvider::Copilot,
+        |p| format!(".github/instructions/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+
+    // Prompt files (skills): {project}/.github/prompts/*.prompt.md
+    scan_glob_files(
+        &project_root.join(".github/prompts/*.prompt.md"),
+        ArtifactType::Skill,
+        ArtifactProvider::Copilot,
+        |p| format!(".github/prompts/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+
     // System prompt: {project}/.github/copilot-instructions.md
     if let Some(mut a) = scan_single_file(
         &project_root.join(".github/copilot-instructions.md"),
         ArtifactType::SystemPrompt,
         ArtifactProvider::Copilot,
         ".github/copilot-instructions.md",
+    ) {
+        a.origin_project = Some(project_name.clone());
+        artifacts.push(a);
+    }
+
+    // Cross-tool: {project}/AGENTS.md
+    if let Some(mut a) = scan_single_file(
+        &project_root.join("AGENTS.md"),
+        ArtifactType::SystemPrompt,
+        ArtifactProvider::Copilot,
+        "AGENTS.md",
     ) {
         a.origin_project = Some(project_name);
         artifacts.push(a);
@@ -496,12 +636,33 @@ fn scan_windsurf_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
     let mut artifacts = Vec::new();
     let project_name = project_dir_name(project_root);
 
-    // System prompt: {project}/.windsurfrules (root-level file)
+    // Rules (modern): {project}/.windsurf/rules/*.md
+    scan_glob_files(
+        &project_root.join(".windsurf/rules/*.md"),
+        ArtifactType::Rule,
+        ArtifactProvider::Windsurf,
+        |p| format!(".windsurf/rules/{}", file_name(p)),
+        Some(&project_name),
+        &mut artifacts,
+    );
+
+    // Legacy system prompt: {project}/.windsurfrules (root-level file)
     if let Some(mut a) = scan_single_file(
         &project_root.join(".windsurfrules"),
         ArtifactType::SystemPrompt,
         ArtifactProvider::Windsurf,
         ".windsurfrules",
+    ) {
+        a.origin_project = Some(project_name.clone());
+        artifacts.push(a);
+    }
+
+    // Cross-tool: {project}/AGENTS.md
+    if let Some(mut a) = scan_single_file(
+        &project_root.join("AGENTS.md"),
+        ArtifactType::SystemPrompt,
+        ArtifactProvider::Windsurf,
+        "AGENTS.md",
     ) {
         a.origin_project = Some(project_name);
         artifacts.push(a);
@@ -528,10 +689,10 @@ fn scan_amazonq_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         &mut artifacts,
     );
 
-    // Rules/system prompts: {project}/.amazonq/rules/*.md
+    // Rules: {project}/.amazonq/rules/*.md
     scan_glob_files(
         &project_root.join(".amazonq/rules/*.md"),
-        ArtifactType::SystemPrompt,
+        ArtifactType::Rule,
         ArtifactProvider::Amazonq,
         |p| format!(".amazonq/rules/{}", file_name(p)),
         Some(&project_name),
