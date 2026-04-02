@@ -86,6 +86,7 @@ pub async fn handle_forward_proxy(
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
+    agent_override: Option<String>,
 ) -> Response {
     let start = Instant::now();
     let learning_mode = state.is_learning_mode();
@@ -157,8 +158,9 @@ pub async fn handle_forward_proxy(
                 path: path.clone(),
                 decision: "denied".to_string(),
                 operation: operation.clone(),
-                agent_type: state.agent_type.clone(),
+                agent_type: agent_override.clone().or_else(|| state.agent_type.clone()),
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: state.environment.clone(),
                 learning_mode: false,
@@ -171,6 +173,7 @@ pub async fn handle_forward_proxy(
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: Some(decision.reason.clone()),
                 policy_rule: Some(decision.matched_rule.clone()),
                 response_status: Some(403),
                 latency_ms: Some(latency_ms),
@@ -348,8 +351,9 @@ pub async fn handle_forward_proxy(
         path: path.clone(),
         decision: decision_str.to_string(),
         operation,
-        agent_type: state.agent_type.clone(),
+        agent_type: agent_override.clone().or_else(|| state.agent_type.clone()),
         org_id: None,
+        user_id: None,
         task_id: None,
         environment: state.environment.clone(),
         learning_mode,
@@ -362,6 +366,7 @@ pub async fn handle_forward_proxy(
         mcp_tool_name: None,
         mcp_server: None,
         intersection_rules: None,
+        reason: None,
         policy_rule,
         response_status: Some(response_status),
         latency_ms: Some(latency_ms),
@@ -429,6 +434,7 @@ fn parse_host_port(authority: &str) -> Result<(String, u16), String> {
 pub async fn run_forward_proxy(
     state: Arc<GatewayState>,
     listener: tokio::net::TcpListener,
+    agent_override: Option<String>,
 ) -> anyhow::Result<()> {
     // Build the axum router for non-CONNECT requests.
     let router = crate::proxy::build_router(state.clone());
@@ -437,9 +443,12 @@ pub async fn run_forward_proxy(
         let (stream, peer_addr) = listener.accept().await?;
         let state = state.clone();
         let router = router.clone();
+        let agent_override = agent_override.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(state, router, stream, peer_addr).await {
+            if let Err(e) =
+                handle_connection(state, router, stream, peer_addr, agent_override).await
+            {
                 eprintln!("[proxy] connection error from {}: {}", peer_addr, e);
             }
         });
@@ -455,6 +464,7 @@ async fn handle_connection(
     router: axum::Router,
     stream: tokio::net::TcpStream,
     peer_addr: std::net::SocketAddr,
+    agent_override: Option<String>,
 ) -> anyhow::Result<()> {
     // Peek at the first bytes to detect CONNECT (non-destructive).
     let mut buf = [0u8; 8];
@@ -462,9 +472,9 @@ async fn handle_connection(
     let first_bytes = &buf[..n];
 
     if first_bytes.starts_with(b"CONNECT") {
-        handle_connect_tunnel(state, stream, peer_addr).await
+        handle_connect_tunnel(state, stream, peer_addr, agent_override).await
     } else {
-        handle_http_on_stream(state, router, stream, peer_addr).await
+        handle_http_on_stream(state, router, stream, peer_addr, agent_override).await
     }
 }
 
@@ -476,6 +486,7 @@ async fn handle_connect_tunnel(
     state: Arc<GatewayState>,
     mut client: tokio::net::TcpStream,
     _peer_addr: std::net::SocketAddr,
+    agent_override: Option<String>,
 ) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -542,8 +553,9 @@ async fn handle_connect_tunnel(
                 path: format!("{}:{}", hostname, port),
                 decision: "error".to_string(),
                 operation: Some("connect".to_string()),
-                agent_type: state.agent_type.clone(),
+                agent_type: agent_override.clone().or_else(|| state.agent_type.clone()),
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: state.environment.clone(),
                 learning_mode,
@@ -554,6 +566,7 @@ async fn handle_connect_tunnel(
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: None,
                 policy_rule: None,
                 response_status: Some(502),
                 latency_ms: Some(start.elapsed().as_millis() as u64),
@@ -578,8 +591,9 @@ async fn handle_connect_tunnel(
         path: format!("{}:{}", hostname, port),
         decision: "allowed".to_string(),
         operation: Some("connect".to_string()),
-        agent_type: state.agent_type.clone(),
+        agent_type: agent_override.clone().or_else(|| state.agent_type.clone()),
         org_id: None,
+        user_id: None,
         task_id: None,
         environment: state.environment.clone(),
         learning_mode,
@@ -590,6 +604,7 @@ async fn handle_connect_tunnel(
         mcp_tool_name: None,
         mcp_server: None,
         intersection_rules: None,
+        reason: None,
         policy_rule: None,
         response_status: Some(200),
         latency_ms: Some(connect_ms),
@@ -634,6 +649,7 @@ async fn handle_http_on_stream(
     router: axum::Router,
     stream: tokio::net::TcpStream,
     peer_addr: std::net::SocketAddr,
+    agent_override: Option<String>,
 ) -> anyhow::Result<()> {
     use hyper::server::conn::http1;
     use hyper::service::service_fn;
@@ -649,6 +665,7 @@ async fn handle_http_on_stream(
                 let state = state.clone();
                 let router = router.clone();
                 let peer_addr = peer_addr;
+                let agent_override = agent_override.clone();
                 async move {
                     let is_absolute = req.uri().scheme().is_some();
 
@@ -669,6 +686,7 @@ async fn handle_http_on_stream(
                             parts.uri,
                             parts.headers,
                             body_bytes,
+                            agent_override,
                         )
                         .await;
                         Ok::<_, std::convert::Infallible>(resp)
@@ -820,6 +838,7 @@ mod tests {
             intersection_rules: vec![],
             counter_store: CounterStore::daily(),
             platform: std::sync::RwLock::new(crate::daemon_config::PlatformConfig::default()),
+            user_id: None,
         })
     }
 
@@ -848,7 +867,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let handle = tokio::spawn(async move {
-            run_forward_proxy(state, listener).await.unwrap();
+            run_forward_proxy(state, listener, None).await.unwrap();
         });
         // Give the listener a moment to start accepting.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

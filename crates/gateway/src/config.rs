@@ -118,6 +118,9 @@ pub const KNOWN_HOSTS: &[(&str, &str)] = &[
     ("slack.com", "slack"),
     ("api.openai.com", "openai"),
     ("api.anthropic.com", "anthropic"),
+    ("api2.cursor.sh", "cursor"),
+    ("api3.cursor.sh", "cursor"),
+    ("http-intake.logs.us5.datadoghq.com", "datadog"),
 ];
 
 /// Resolve a hostname to a provider name. Returns the friendly name for known

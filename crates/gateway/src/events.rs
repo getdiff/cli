@@ -44,6 +44,8 @@ pub struct Event {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
@@ -63,6 +65,8 @@ pub struct Event {
     pub mcp_server: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intersection_rules: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_rule: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -406,6 +410,7 @@ impl Event {
             },
             agent_type: None,
             org_id: None,
+            user_id: None,
             task_id: None,
             environment: None,
             learning_mode: audit.learning_mode,
@@ -420,6 +425,11 @@ impl Event {
             mcp_tool_name: None,
             mcp_server: None,
             intersection_rules,
+            reason: if audit.reason.is_empty() {
+                None
+            } else {
+                Some(audit.reason.clone())
+            },
             policy_rule: if audit.matched_rule.is_empty() {
                 None
             } else {
@@ -496,6 +506,7 @@ mod tests {
                 operation: Some("get_user".to_string()),
                 agent_type: None,
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,
@@ -506,6 +517,7 @@ mod tests {
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: None,
                 policy_rule: None,
                 response_status: Some(200),
                 latency_ms: Some(42),
@@ -522,6 +534,8 @@ mod tests {
         // Optional None fields should be absent.
         assert!(json["events"][0].get("agent_type").is_none());
         assert!(json["events"][0].get("mcp_tool_name").is_none());
+        assert!(json["events"][0].get("user_id").is_none());
+        assert!(json["events"][0].get("reason").is_none());
     }
 
     #[test]
@@ -556,10 +570,15 @@ mod tests {
         assert_eq!(event.request_body_hash, Some("abcdef1234".to_string()));
         assert_eq!(event.policy_rule, Some("max_amount_cents".to_string()));
         assert_eq!(
+            event.reason,
+            Some("amount 3000 exceeds max_amount_cents 1000".to_string())
+        );
+        assert_eq!(
             event.intersection_rules,
             Some(vec!["payment-data-restriction".to_string()])
         );
         assert!(event.parameters.is_some());
+        assert!(event.user_id.is_none());
     }
 
     #[test]
@@ -590,6 +609,12 @@ mod tests {
             event.would_reason,
             Some("method POST is blocked".to_string())
         );
+        // Empty reason string maps to None.
+        assert!(event.reason.is_none());
+        // Verify absent in serialized JSON.
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("reason").is_none());
+        assert!(json.get("user_id").is_none());
     }
 
     #[tokio::test]
@@ -617,6 +642,7 @@ mod tests {
                 operation: None,
                 agent_type: None,
                 org_id: None,
+                user_id: None,
                 task_id: None,
                 environment: None,
                 learning_mode: false,
@@ -627,6 +653,7 @@ mod tests {
                 mcp_tool_name: None,
                 mcp_server: None,
                 intersection_rules: None,
+                reason: None,
                 policy_rule: None,
                 response_status: None,
                 latency_ms: None,

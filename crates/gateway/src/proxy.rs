@@ -92,6 +92,8 @@ pub struct GatewayState {
     /// Platform-synced configuration (mode, policies, credentials).
     /// Updated by the background config sync task in `daemon_config.rs`.
     pub platform: RwLock<PlatformConfig>,
+    /// User ID from the CLI config (email or explicit user_id).
+    pub user_id: Option<String>,
 }
 
 impl GatewayState {
@@ -129,7 +131,7 @@ impl GatewayState {
 /// Load a config file and run the proxy. Called from the CLI entry point.
 pub async fn run_proxy_from_file(config_path: &str, port: u16) -> anyhow::Result<()> {
     let config = crate::config::load(config_path)?;
-    run_proxy(config, port).await
+    run_proxy(config, port, vec![]).await
 }
 
 /// Entry point for the `getdiff gateway` CLI command.
@@ -142,6 +144,7 @@ pub async fn run_gateway(
     port: u16,
     agent_type: Option<String>,
     environment: Option<String>,
+    agent_ports: Vec<(String, u16)>,
 ) -> anyhow::Result<()> {
     let mut config = if let Some(path) = config_path {
         let yaml_config = crate::config::load(path)?;
@@ -181,14 +184,18 @@ pub async fn run_gateway(
         port
     );
 
-    run_proxy(config, port).await
+    run_proxy(config, port, agent_ports).await
 }
 
 /// Build the gateway state from a `GatewayConfig`, then start the axum server
 /// on the given port.
 ///
 /// This function blocks until the server shuts down.
-pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
+pub async fn run_proxy(
+    config: GatewayConfig,
+    port: u16,
+    agent_ports: Vec<(String, u16)>,
+) -> anyhow::Result<()> {
     // Build provider entries from config.
     let mut providers = HashMap::new();
     // Use config-driven adapters if any provider has an `adapter` block,
@@ -256,7 +263,13 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
     let control_plane_url = std::env::var("GATEWAY_CONTROL_PLANE_URL").unwrap_or_default();
     let api_token = read_api_token();
 
-    if !control_plane_url.is_empty() && api_token.is_empty() {
+    if control_plane_url.is_empty() {
+        eprintln!(
+            "[gateway] WARNING: GATEWAY_CONTROL_PLANE_URL is not set. Running in disconnected \
+             mode — events will not be shipped, daemon will not register, and policies will \
+             not sync from the platform. Set GATEWAY_CONTROL_PLANE_URL to connect."
+        );
+    } else if api_token.is_empty() {
         eprintln!(
             "[gateway] WARNING: GATEWAY_CONTROL_PLANE_URL is set but no API token found. \
              Event shipping will fail with 401. Run `getdiff login` or set DIFF_API_KEY."
@@ -305,22 +318,45 @@ pub async fn run_proxy(config: GatewayConfig, port: u16) -> anyhow::Result<()> {
         intersection_rules,
         counter_store: CounterStore::daily(),
         platform: RwLock::new(PlatformConfig::default()),
+        user_id: read_user_id(),
     });
 
     // Perform initial config sync before accepting traffic, then spawn background loop.
     crate::daemon_config::initial_sync(&state, &control_plane_url, &api_token).await;
     crate::daemon_config::spawn_config_sync(state.clone(), control_plane_url.clone(), api_token);
 
-    let addr = format!("0.0.0.0:{}", port);
-    eprintln!("gateway proxy listening on {}", addr);
+    // Bind per-agent listeners (each port is tagged with an agent name).
+    for (agent_name, agent_port) in &agent_ports {
+        let addr = format!("0.0.0.0:{}", agent_port);
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(listener) => {
+                eprintln!("[gateway] listening: {} on :{}", agent_name, agent_port);
+                let state = state.clone();
+                let agent_name = agent_name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::forward_proxy::run_forward_proxy(state, listener, Some(agent_name))
+                            .await
+                    {
+                        eprintln!("[gateway] listener error: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                eprintln!(
+                    "[gateway] WARNING: could not bind :{} for {}: {}",
+                    agent_port, agent_name, e
+                );
+            }
+        }
+    }
 
-    // Start the forward proxy TCP listener. This handles:
-    // - CONNECT requests (HTTPS tunneling) at the TCP level
-    // - HTTP forward-proxy requests (absolute URI) via hyper
-    // - Legacy path-prefix requests are also handled via the hyper handler
-    //   which delegates to handle_forward_proxy for absolute URIs.
+    // Bind the default/fallback listener.
+    let addr = format!("0.0.0.0:{}", port);
+    eprintln!("[gateway] listening: default on :{}", port);
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    crate::forward_proxy::run_forward_proxy(state, listener).await?;
+    crate::forward_proxy::run_forward_proxy(state, listener, None).await?;
     Ok(())
 }
 
@@ -1057,8 +1093,13 @@ pub fn enrich_event(
     provider: &str,
     credential_env_var: Option<&String>,
 ) {
-    event.agent_type = state.agent_type.clone();
+    // Only set agent_type from state if not already populated by the listener
+    // (per-agent ports set it before calling enrich_event).
+    if event.agent_type.is_none() {
+        event.agent_type = state.agent_type.clone();
+    }
     event.environment = state.environment.clone();
+    event.user_id = state.user_id.clone();
 
     // Resolve task_id from the dynamic session that owns this provider.
     {
@@ -1071,11 +1112,16 @@ pub fn enrich_event(
         }
     }
 
-    // Set credential_id from the env var name.
+    // Set credential_id: prefer explicit env_var param, fall back to existing event value.
     if let Some(env_var) = credential_env_var {
         event.credential_id = Some(env_var.clone());
-        event.credential_ttl = Some(0); // Unknown TTL for env-var credentials.
     }
+    // Compute credential_ttl from the resolved credential_id.
+    event.credential_ttl = match event.credential_id.as_deref() {
+        Some("platform_secret") => Some(300),
+        Some(_) => None, // env-var credential, TTL unknown
+        None => None,
+    };
 
     // Promote mcp_tool_name from parsed parameters to top-level event field.
     if event.mcp_tool_name.is_none()
@@ -1177,6 +1223,30 @@ fn read_api_token() -> String {
     String::new()
 }
 
+/// Read the user_id from the Diff config file.
+/// Falls back to the email field if user_id is not present.
+fn read_user_id() -> Option<String> {
+    let config_path = dirs::config_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("diff")
+        .join("config.json");
+
+    if let Ok(contents) = std::fs::read_to_string(&config_path)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents)
+    {
+        // Prefer explicit user_id, fall back to email.
+        if let Some(uid) = json.get("user_id").and_then(|v| v.as_str()) {
+            return Some(uid.to_string());
+        }
+        if let Some(email) = json.get("email").and_then(|v| v.as_str()) {
+            return Some(email.to_string());
+        }
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Daemon registration
 // ---------------------------------------------------------------------------
@@ -1189,23 +1259,24 @@ async fn register_daemon(
     daemon_id: &str,
     capabilities: &[String],
 ) -> Result<(), String> {
-    let url = format!(
-        "{}/v1/daemons/register",
-        control_plane_url.trim_end_matches('/')
-    );
+    let url = format!("{}/v1/daemons", control_plane_url.trim_end_matches('/'));
 
     let hostname = gethostname::gethostname().to_string_lossy().to_string();
     let version = env!("CARGO_PKG_VERSION");
 
+    let user_id = read_user_id();
     let payload = json!({
         "daemon_id": daemon_id,
         "hostname": hostname,
         "version": version,
         "capabilities": capabilities,
+        "user_id": user_id,
     });
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("http client error: {}", e))?;
 
@@ -1324,6 +1395,7 @@ mod tests {
             intersection_rules: vec![],
             counter_store: CounterStore::daily(),
             platform: RwLock::new(PlatformConfig::default()),
+            user_id: None,
         })
     }
 
