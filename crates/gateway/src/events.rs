@@ -534,6 +534,8 @@ mod tests {
         // Optional None fields should be absent.
         assert!(json["events"][0].get("agent_type").is_none());
         assert!(json["events"][0].get("mcp_tool_name").is_none());
+        assert!(json["events"][0].get("user_id").is_none());
+        assert!(json["events"][0].get("reason").is_none());
     }
 
     #[test]
@@ -568,10 +570,15 @@ mod tests {
         assert_eq!(event.request_body_hash, Some("abcdef1234".to_string()));
         assert_eq!(event.policy_rule, Some("max_amount_cents".to_string()));
         assert_eq!(
+            event.reason,
+            Some("amount 3000 exceeds max_amount_cents 1000".to_string())
+        );
+        assert_eq!(
             event.intersection_rules,
             Some(vec!["payment-data-restriction".to_string()])
         );
         assert!(event.parameters.is_some());
+        assert!(event.user_id.is_none());
     }
 
     #[test]
@@ -602,6 +609,12 @@ mod tests {
             event.would_reason,
             Some("method POST is blocked".to_string())
         );
+        // Empty reason string maps to None.
+        assert!(event.reason.is_none());
+        // Verify absent in serialized JSON.
+        let json = serde_json::to_value(&event).unwrap();
+        assert!(json.get("reason").is_none());
+        assert!(json.get("user_id").is_none());
     }
 
     #[tokio::test]

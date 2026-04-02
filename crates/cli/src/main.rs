@@ -343,7 +343,18 @@ async fn main() -> Result<()> {
                 });
             }
 
-            gateway::proxy::run_gateway(config.as_deref(), port, agent_type, environment).await?;
+            let agent_ports: Vec<(String, u16)> = AGENT_PORTS
+                .iter()
+                .map(|(name, p)| (name.to_string(), *p))
+                .collect();
+            gateway::proxy::run_gateway(
+                config.as_deref(),
+                port,
+                agent_type,
+                environment,
+                agent_ports,
+            )
+            .await?;
         }
         Commands::MockApi { port } => {
             gateway::mockapi::run_mock_api(port).await?;
@@ -608,9 +619,31 @@ const SUPPORTED_AGENTS: &[&str] = &[
     "cursor",
 ];
 
+/// Per-agent proxy port assignments. Each agent gets its own port so events
+/// can be attributed to a specific agent. The default port (19090) is used
+/// as a fallback for unrecognized traffic.
+const AGENT_PORTS: &[(&str, u16)] = &[
+    ("claude-code", 19091),
+    ("cursor", 19092),
+    ("codex", 19093),
+    ("gemini", 19094),
+    ("opencode", 19095),
+    ("copilot", 19096),
+];
+
+/// Look up the per-agent port, falling back to the given default port.
+fn agent_port(agent: &str, default_port: u16) -> u16 {
+    AGENT_PORTS
+        .iter()
+        .find(|(name, _)| *name == agent)
+        .map(|(_, port)| *port)
+        .unwrap_or(default_port)
+}
+
 /// Configure an agent to route traffic through the gateway proxy.
 fn init_agent(agent: &str, port: u16) -> Result<()> {
-    let proxy_url = format!("http://localhost:{}", port);
+    let agent_port = agent_port(agent, port);
+    let proxy_url = format!("http://localhost:{}", agent_port);
 
     match agent {
         "all" => init_all(port),
@@ -619,16 +652,30 @@ fn init_agent(agent: &str, port: u16) -> Result<()> {
             "~/.claude/settings.json",
             &home_join(".claude"),
             &proxy_url,
+            Some(format!("http://localhost:{}/anthropic", agent_port)),
         ),
+        // Copilot: no BASE_URL override — GitHub Copilot uses its own endpoint
+        // and does not support a standard base URL env var.
         "copilot" => init_json_env(
             "Copilot",
             "~/.copilot/config.json",
             &home_join(".copilot"),
             &proxy_url,
+            None,
         ),
+        // Cursor: no BASE_URL override — Cursor uses api2.cursor.sh/api3.cursor.sh
+        // which are proprietary endpoints, not standard OpenAI-compatible.
         "cursor" => init_cursor(&proxy_url),
         // Agents that don't have config-file env injection — install wrapper script.
-        "codex" | "gemini" | "opencode" => init_wrapper(agent, &proxy_url),
+        "codex" => init_wrapper(
+            agent,
+            &proxy_url,
+            Some(format!("http://localhost:{}/openai", agent_port)),
+        ),
+        // Gemini: no confirmed BASE_URL env var for Google's Gemini CLI.
+        // OpenCode: supports multiple providers; no single BASE_URL to set.
+        // Both fall back to CONNECT tunneling (hostname + timing visibility).
+        "gemini" | "opencode" => init_wrapper(agent, &proxy_url, None),
         "--env" | "env" => {
             eprintln!("Set these environment variables before launching your agent:");
             eprintln!();
@@ -738,11 +785,14 @@ fn home_join(relative: &str) -> std::path::PathBuf {
 
 /// Configure an agent that stores env vars in a JSON settings file.
 /// Works for Claude Code (~/.claude/settings.json) and Copilot (~/.copilot/config.json).
+/// If `base_url` is provided, sets the appropriate BASE_URL env var for direct
+/// HTTP routing (full request visibility instead of CONNECT tunnels).
 fn init_json_env(
     agent_name: &str,
     display_path: &str,
     config_dir: &std::path::Path,
     proxy_url: &str,
+    base_url: Option<String>,
 ) -> Result<()> {
     if !config_dir.exists() {
         bail!(
@@ -776,6 +826,17 @@ fn init_json_env(
         .ok_or_else(|| anyhow::anyhow!("env field in {} is not an object", display_path))?;
     env_obj.insert("HTTP_PROXY".to_string(), serde_json::json!(proxy_url));
     env_obj.insert("HTTPS_PROXY".to_string(), serde_json::json!(proxy_url));
+    if let Some(ref url) = base_url {
+        // Determine the env var name based on the URL path prefix.
+        let var_name = if url.contains("/anthropic") {
+            "ANTHROPIC_BASE_URL"
+        } else if url.contains("/openai") {
+            "OPENAI_BASE_URL"
+        } else {
+            "ANTHROPIC_BASE_URL"
+        };
+        env_obj.insert(var_name.to_string(), serde_json::json!(url));
+    }
 
     let json_str = serde_json::to_string_pretty(&settings)?;
     std::fs::write(&settings_path, json_str)?;
@@ -808,6 +869,8 @@ fn uninit_json_env(agent_name: &str, settings_path: &std::path::Path) -> Result<
     if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
         env.remove("HTTP_PROXY");
         env.remove("HTTPS_PROXY");
+        env.remove("ANTHROPIC_BASE_URL");
+        env.remove("OPENAI_BASE_URL");
         if env.is_empty() {
             settings.as_object_mut().unwrap().remove("env");
         }
@@ -905,7 +968,7 @@ fn cursor_settings_path() -> Result<std::path::PathBuf> {
 ///
 /// Creates `~/.getdiff/bin/<agent>` and ensures `~/.getdiff/bin` is on PATH
 /// by adding a source line to the user's shell profile.
-fn init_wrapper(agent: &str, proxy_url: &str) -> Result<()> {
+fn init_wrapper(agent: &str, proxy_url: &str, base_url: Option<String>) -> Result<()> {
     // Find the real binary.
     let real_path = which_binary(agent)?;
     let wrapper_dir = home_join(".getdiff/bin");
@@ -926,15 +989,28 @@ fn init_wrapper(agent: &str, proxy_url: &str) -> Result<()> {
     // Write the wrapper script.
     // Resolve the real binary at runtime via PATH (skipping our wrapper dir)
     // so the script doesn't break if the binary moves or is updated.
+    let base_url_line = if let Some(ref url) = base_url {
+        let var_name = if url.contains("/openai") {
+            "OPENAI_BASE_URL"
+        } else if url.contains("/anthropic") {
+            "ANTHROPIC_BASE_URL"
+        } else {
+            "OPENAI_BASE_URL"
+        };
+        format!(" {}=\"{}\"", var_name, url)
+    } else {
+        String::new()
+    };
     let script = format!(
         "#!/bin/sh\n\
          # Resolve the real binary by removing our wrapper dir from PATH.\n\
          _GETDIFF_PATH=$(echo \"$PATH\" | tr ':' '\\n' | grep -v '{wrapper}' | tr '\\n' ':')\n\
          _GETDIFF_BIN=$(PATH=\"$_GETDIFF_PATH\" command -v {agent})\n\
-         exec env HTTP_PROXY=\"{proxy}\" HTTPS_PROXY=\"{proxy}\" \"$_GETDIFF_BIN\" \"$@\"\n",
+         exec env HTTP_PROXY=\"{proxy}\" HTTPS_PROXY=\"{proxy}\"{base_url} \"$_GETDIFF_BIN\" \"$@\"\n",
         wrapper = wrapper_dir.display(),
         agent = agent,
         proxy = proxy_url,
+        base_url = base_url_line,
     );
     std::fs::write(&wrapper_path, &script)?;
 

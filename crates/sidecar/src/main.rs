@@ -56,9 +56,14 @@ async fn main() {
     );
     eprintln!("  port:   {}", port);
 
-    if let Err(e) =
-        getdiff_gateway::proxy::run_gateway(config_path.as_deref(), port, agent_type, environment)
-            .await
+    if let Err(e) = getdiff_gateway::proxy::run_gateway(
+        config_path.as_deref(),
+        port,
+        agent_type,
+        environment,
+        vec![],
+    )
+    .await
     {
         eprintln!("fatal: {:#}", e);
         std::process::exit(1);
