@@ -160,7 +160,7 @@ enum ArtifactCommands {
         #[arg(long)]
         query: Option<String>,
 
-        /// Filter by type (agent, system_prompt, mcp, memory, hook)
+        /// Filter by type (agent, skill, rule, system_prompt, mcp, memory, hook, plugin)
         #[arg(long)]
         r#type: Option<String>,
 

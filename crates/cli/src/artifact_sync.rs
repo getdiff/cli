@@ -183,7 +183,7 @@ pub async fn run_sync_cycle(server: &str, api_key: &str, diff_dir: &Path) -> Res
                     pending.len()
                 );
                 for item in &pending {
-                    match install_pending_artifact(item) {
+                    match install_pending_artifact(&client, server, api_key, item).await {
                         Ok(local_hash) => {
                             eprintln!("    Installed: {} (v{})", item.name, item.version);
                             if let Err(e) = confirm_install(
@@ -303,12 +303,33 @@ struct PendingItem {
     #[serde(rename = "origin_provider")]
     _origin_provider: String,
     origin_path: String,
+    #[serde(default)]
+    ucir: Option<serde_json::Value>,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct PendingResponse {
     #[serde(default)]
     pending: Vec<PendingItem>,
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactRecord {
+    id: String,
+    name: String,
+    artifact_type: String,
+    origin_provider: String,
+    origin_path: String,
+    raw_content: String,
+    version: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PluginChildRef {
+    artifact_id: Option<String>,
+    origin_path: Option<String>,
+    name: Option<String>,
+    artifact_type: Option<String>,
 }
 
 async fn poll_pending(
@@ -339,11 +360,305 @@ async fn poll_pending(
     Ok(result.pending)
 }
 
+fn extract_plugin_child_refs(value: Option<&serde_json::Value>) -> Result<Vec<PluginChildRef>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let ucir = match value {
+        serde_json::Value::Object(map) => map,
+        serde_json::Value::String(text) => {
+            let parsed: serde_json::Value = serde_json::from_str(text)?;
+            return extract_plugin_child_refs(Some(&parsed));
+        }
+        _ => return Ok(Vec::new()),
+    };
+
+    let candidates = ucir
+        .get("contents")
+        .or_else(|| ucir.get("children"))
+        .or_else(|| ucir.get("artifacts"));
+    let Some(serde_json::Value::Array(entries)) = candidates else {
+        return Ok(Vec::new());
+    };
+
+    Ok(entries
+        .iter()
+        .filter_map(|entry| match entry {
+            serde_json::Value::String(path) => Some(PluginChildRef {
+                artifact_id: None,
+                origin_path: Some(path.clone()),
+                name: None,
+                artifact_type: None,
+            }),
+            serde_json::Value::Object(obj) => {
+                let artifact_id = obj
+                    .get("artifactId")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                let origin_path = obj
+                    .get("originPath")
+                    .or_else(|| obj.get("path"))
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                let name = obj
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                let artifact_type = obj
+                    .get("type")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                if artifact_id.is_none()
+                    && origin_path.is_none()
+                    && name.is_none()
+                    && artifact_type.is_none()
+                {
+                    None
+                } else {
+                    Some(PluginChildRef {
+                        artifact_id,
+                        origin_path,
+                        name,
+                        artifact_type,
+                    })
+                }
+            }
+            _ => None,
+        })
+        .collect())
+}
+
+async fn fetch_artifact_record(
+    client: &reqwest::Client,
+    server: &str,
+    api_key: &str,
+    artifact_id: &str,
+) -> Result<ArtifactRecord> {
+    let detail_url = format!(
+        "{}/api/v1/artifacts/{}",
+        server.trim_end_matches('/'),
+        artifact_id
+    );
+    let response = client
+        .get(&detail_url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!(
+            "Failed to fetch artifact details for {} (HTTP {}): {}",
+            artifact_id,
+            status,
+            body
+        );
+    }
+
+    let detail: serde_json::Value = response.json().await?;
+    let artifact = &detail["artifact"];
+    Ok(ArtifactRecord {
+        id: artifact["id"].as_str().unwrap_or(artifact_id).to_string(),
+        name: artifact["name"].as_str().unwrap_or("unknown").to_string(),
+        artifact_type: artifact["type"].as_str().unwrap_or("agent").to_string(),
+        origin_provider: artifact["originProvider"]
+            .as_str()
+            .unwrap_or("claude")
+            .to_string(),
+        origin_path: artifact["originPath"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        raw_content: artifact["rawContent"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        version: artifact["version"].as_u64().unwrap_or(1),
+    })
+}
+
+async fn search_artifact_candidates(
+    client: &reqwest::Client,
+    server: &str,
+    api_key: &str,
+    query: Option<&str>,
+    artifact_type: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut url = format!("{}/api/v1/artifacts", server.trim_end_matches('/'));
+    let mut first = true;
+    if let Some(q) = query.filter(|q| !q.is_empty()) {
+        url.push(if first { '?' } else { '&' });
+        first = false;
+        url.push_str(&format!("q={}", urlencoding::encode(q)));
+    }
+    if let Some(t) = artifact_type.filter(|t| !t.is_empty()) {
+        url.push(if first { '?' } else { '&' });
+        url.push_str(&format!("type={}", urlencoding::encode(t)));
+    }
+
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        bail!("Artifact search failed (HTTP {}): {}", status, body);
+    }
+
+    let body: serde_json::Value = response.json().await?;
+    Ok(body["artifacts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|artifact| artifact["id"].as_str().map(ToString::to_string))
+        .collect())
+}
+
+async fn resolve_plugin_child_artifact(
+    client: &reqwest::Client,
+    server: &str,
+    api_key: &str,
+    plugin_name: &str,
+    plugin_provider: &str,
+    child: &PluginChildRef,
+) -> Result<ArtifactRecord> {
+    if let Some(artifact_id) = &child.artifact_id {
+        return fetch_artifact_record(client, server, api_key, artifact_id).await;
+    }
+
+    let candidate_ids = search_artifact_candidates(
+        client,
+        server,
+        api_key,
+        child.name.as_deref(),
+        child.artifact_type.as_deref(),
+    )
+    .await?;
+
+    let mut exact_matches = Vec::new();
+    for candidate_id in candidate_ids {
+        let record = fetch_artifact_record(client, server, api_key, &candidate_id).await?;
+        if let Some(expected_type) = &child.artifact_type
+            && record.artifact_type != *expected_type
+        {
+            continue;
+        }
+        if let Some(expected_path) = &child.origin_path
+            && record.origin_path != *expected_path
+        {
+            continue;
+        }
+        if let Some(expected_name) = &child.name
+            && record.name != *expected_name
+        {
+            continue;
+        }
+        if !plugin_provider.is_empty() && record.origin_provider != plugin_provider {
+            continue;
+        }
+        exact_matches.push(record);
+    }
+
+    match exact_matches.len() {
+        1 => Ok(exact_matches.remove(0)),
+        0 => bail!(
+            "Could not resolve plugin child for {}: origin_path={:?} name={:?} type={:?}",
+            plugin_name,
+            child.origin_path,
+            child.name,
+            child.artifact_type
+        ),
+        _ => bail!(
+            "Ambiguous plugin child for {}: origin_path={:?} name={:?} type={:?}",
+            plugin_name,
+            child.origin_path,
+            child.name,
+            child.artifact_type
+        ),
+    }
+}
+
+async fn install_plugin_bundle(
+    client: &reqwest::Client,
+    server: &str,
+    api_key: &str,
+    item: &PendingItem,
+) -> Result<String> {
+    let plugin_ucir_value = item
+        .ucir
+        .as_ref()
+        .cloned()
+        .unwrap_or(serde_json::Value::String(item.raw_content.clone()));
+    let child_refs = extract_plugin_child_refs(Some(&plugin_ucir_value))?;
+    if child_refs.is_empty() {
+        bail!(
+            "Plugin bundle {} does not contain any installable child refs",
+            item.name
+        );
+    }
+
+    let plugin_record = fetch_artifact_record(client, server, api_key, &item.artifact_id).await?;
+    let mut installed_children = 0usize;
+    for child_ref in child_refs {
+        if child_ref.artifact_type.as_deref() == Some("plugin") {
+            bail!("Nested plugin bundles are not supported for {}", item.name);
+        }
+        let child = resolve_plugin_child_artifact(
+            client,
+            server,
+            api_key,
+            &item.name,
+            &plugin_record.origin_provider,
+            &child_ref,
+        )
+        .await?;
+
+        let child_pending = PendingItem {
+            _installation_id: String::new(),
+            artifact_id: child.id,
+            name: child.name.clone(),
+            artifact_type: child.artifact_type.clone(),
+            version: child.version,
+            target_provider: item.target_provider.clone(),
+            raw_content: child.raw_content,
+            _origin_provider: child.origin_provider,
+            origin_path: child.origin_path,
+            ucir: None,
+        };
+        let _ = install_leaf_pending_artifact(&child_pending)?;
+        installed_children += 1;
+    }
+
+    eprintln!(
+        "      Materialized plugin bundle {} into {} child artifact(s)",
+        item.name, installed_children
+    );
+    Ok(artifact_scanner::sha256_hex(&item.raw_content))
+}
+
 // ---------------------------------------------------------------------------
 // Install pending artifact to local filesystem
 // ---------------------------------------------------------------------------
 
-fn install_pending_artifact(item: &PendingItem) -> Result<String> {
+async fn install_pending_artifact(
+    client: &reqwest::Client,
+    server: &str,
+    api_key: &str,
+    item: &PendingItem,
+) -> Result<String> {
+    if item.artifact_type == "plugin" {
+        return install_plugin_bundle(client, server, api_key, item).await;
+    }
+
+    install_leaf_pending_artifact(item)
+}
+
+fn install_leaf_pending_artifact(item: &PendingItem) -> Result<String> {
     let target_path = resolve_install_path(
         &item.target_provider,
         &item.origin_path,
@@ -379,7 +694,17 @@ fn resolve_install_path(
 
     // If origin_path starts with ~/, expand it
     if let Some(stripped) = origin_path.strip_prefix("~/") {
-        return Ok(home.join(stripped));
+        if target_provider == "claude"
+            && artifact_type == "skill"
+            && stripped.contains(".claude/commands/")
+        {
+            let stem = Path::new(stripped)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            return sanitize_home_join(&home, &format!(".claude/skills/{}/SKILL.md", stem));
+        }
+        return sanitize_home_join(&home, stripped);
     }
 
     // Root-level files that should NOT be remapped to a subdirectory.
@@ -399,14 +724,14 @@ fn resolve_install_path(
     // Provider-specific path mapping for files inside subdirectories
     if origin_path.starts_with('.') || origin_path.contains('/') {
         let path = match target_provider {
-            "claude" => resolve_claude_path(origin_path, artifact_type, &home),
-            "codex" => resolve_codex_path(origin_path, artifact_type, &home),
-            "cursor" => resolve_cursor_path(origin_path, artifact_type),
-            "copilot" => resolve_copilot_path(origin_path, artifact_type),
-            "windsurf" => resolve_windsurf_path(origin_path, artifact_type, &home),
-            "amazonq" => resolve_amazonq_path(origin_path, artifact_type),
-            "aider" => PathBuf::from(origin_path),
-            _ => PathBuf::from(origin_path),
+            "claude" => resolve_claude_path(origin_path, artifact_type, &home)?,
+            "codex" => resolve_codex_path(origin_path, artifact_type, &home)?,
+            "cursor" => resolve_cursor_path(origin_path, artifact_type)?,
+            "copilot" => resolve_copilot_path(origin_path, artifact_type)?,
+            "windsurf" => resolve_windsurf_path(origin_path, artifact_type, &home)?,
+            "amazonq" => resolve_amazonq_path(origin_path, artifact_type)?,
+            "aider" => sanitize_project_relative_path(origin_path)?,
+            _ => sanitize_project_relative_path(origin_path)?,
         };
         return Ok(path);
     }
@@ -415,71 +740,141 @@ fn resolve_install_path(
     Ok(PathBuf::from(origin_path))
 }
 
-fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> PathBuf {
-    match artifact_type {
+fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> Result<PathBuf> {
+    // Project-scoped artifacts have relative paths (e.g., ".claude/agents/review.md").
+    // Global artifacts have tilde-prefixed paths (e.g., "~/.claude/agents/review.md")
+    // which are expanded before reaching this function. If we get here with a
+    // ".claude/" prefix, it's project-scoped — keep it relative to the project root.
+    let is_project_scoped =
+        origin_path.starts_with(".claude/") && !origin_path.starts_with(".claude/projects/");
+
+    Ok(match artifact_type {
+        "agent" => {
+            if is_project_scoped {
+                sanitize_project_relative_path(origin_path)?
+            } else {
+                let filename = Path::new(origin_path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                sanitize_home_join(home, &format!(".claude/agents/{}", filename))?
+            }
+        }
+        "skill" => {
+            if is_project_scoped {
+                sanitize_project_relative_path(origin_path)?
+            } else if origin_path.contains("/commands/") {
+                let stem = Path::new(origin_path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                sanitize_home_join(home, &format!(".claude/skills/{}/SKILL.md", stem))?
+            } else {
+                sanitize_home_join(home, origin_path)?
+            }
+        }
+        "rule" => {
+            if is_project_scoped {
+                sanitize_project_relative_path(origin_path)?
+            } else {
+                sanitize_home_join(home, origin_path)?
+            }
+        }
+        "hook" | "mcp" => sanitize_home_join(home, ".claude/settings.json")?,
+        "memory" => sanitize_home_join(home, origin_path)?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
+}
+
+fn sanitize_project_relative_path(origin_path: &str) -> Result<PathBuf> {
+    use std::path::Component;
+
+    let path = Path::new(origin_path);
+    if path.is_absolute() {
+        bail!(
+            "absolute project-relative path is not allowed: {}",
+            origin_path
+        );
+    }
+
+    let mut sanitized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => sanitized.push(component.as_os_str()),
+            Component::Normal(part) => sanitized.push(part),
+            Component::ParentDir => {
+                bail!("parent directory traversal is not allowed: {}", origin_path)
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "invalid path component in project-relative path: {}",
+                    origin_path
+                )
+            }
+        }
+    }
+    Ok(sanitized)
+}
+
+fn sanitize_home_join(home: &Path, relative_path: &str) -> Result<PathBuf> {
+    let sanitized = sanitize_project_relative_path(relative_path)?;
+    let joined = home.join(&sanitized);
+    if !joined.starts_with(home) {
+        bail!("resolved path escapes home directory: {}", relative_path);
+    }
+    Ok(joined)
+}
+
+fn resolve_codex_path(origin_path: &str, artifact_type: &str, home: &Path) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "agent" => {
             let filename = Path::new(origin_path)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy();
-            home.join(".claude/agents").join(filename.as_ref())
+            sanitize_home_join(home, &format!(".codex/skills/{}", filename))?
         }
-        "hook" | "mcp" => home.join(".claude/settings.json"),
-        "memory" => home.join(origin_path),
-        _ => PathBuf::from(origin_path),
-    }
+        "hook" => sanitize_home_join(home, ".codex/config.toml")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_codex_path(origin_path: &str, artifact_type: &str, home: &Path) -> PathBuf {
-    match artifact_type {
-        "agent" => {
-            let filename = Path::new(origin_path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            home.join(".codex/skills").join(filename.as_ref())
-        }
-        "hook" => home.join(".codex/config.toml"),
-        _ => PathBuf::from(origin_path),
-    }
-}
-
-fn resolve_cursor_path(origin_path: &str, artifact_type: &str) -> PathBuf {
-    match artifact_type {
+fn resolve_cursor_path(origin_path: &str, artifact_type: &str) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "system_prompt" => {
             // Preserve the origin_path for files inside .cursor/rules/
-            PathBuf::from(origin_path)
+            sanitize_project_relative_path(origin_path)?
         }
-        "mcp" => PathBuf::from(".cursor/mcp.json"),
-        _ => PathBuf::from(origin_path),
-    }
+        "mcp" => sanitize_project_relative_path(".cursor/mcp.json")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_copilot_path(origin_path: &str, artifact_type: &str) -> PathBuf {
-    match artifact_type {
+fn resolve_copilot_path(origin_path: &str, artifact_type: &str) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "agent" => {
             let filename = Path::new(origin_path)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy();
-            PathBuf::from(".github/agents").join(filename.as_ref())
+            sanitize_project_relative_path(&format!(".github/agents/{}", filename))?
         }
-        "system_prompt" => PathBuf::from(".github/copilot-instructions.md"),
-        _ => PathBuf::from(origin_path),
-    }
+        "system_prompt" => sanitize_project_relative_path(".github/copilot-instructions.md")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_windsurf_path(origin_path: &str, _artifact_type: &str, home: &Path) -> PathBuf {
+fn resolve_windsurf_path(origin_path: &str, _artifact_type: &str, home: &Path) -> Result<PathBuf> {
     // Only subdirectory file for windsurf is the MCP config
     if origin_path.contains("mcp_config") {
-        return home.join(".codeium/windsurf/mcp_config.json");
+        return sanitize_home_join(home, ".codeium/windsurf/mcp_config.json");
     }
-    PathBuf::from(origin_path)
+    sanitize_project_relative_path(origin_path)
 }
 
-fn resolve_amazonq_path(origin_path: &str, _artifact_type: &str) -> PathBuf {
+fn resolve_amazonq_path(origin_path: &str, _artifact_type: &str) -> Result<PathBuf> {
     // Preserve the origin path — it already includes the correct subdirectory
-    PathBuf::from(origin_path)
+    sanitize_project_relative_path(origin_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -573,61 +968,29 @@ pub async fn install_artifact(
         body["version"].as_u64().unwrap_or(0),
     );
 
-    // Now fetch the artifact details to get content
-    let detail_url = format!(
-        "{}/api/v1/artifacts/{}",
-        server.trim_end_matches('/'),
-        artifact_id
-    );
-    let detail_response = client
-        .get(&detail_url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await?;
-
-    if !detail_response.status().is_success() {
-        let status = detail_response.status();
-        let body = detail_response.text().await.unwrap_or_default();
-        bail!(
-            "Failed to fetch artifact details (HTTP {}): {}",
-            status,
-            body
-        );
-    }
-
-    let detail: serde_json::Value = detail_response.json().await?;
-    let artifact = &detail["artifact"];
-
-    let raw_content = artifact["rawContent"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let origin_path = artifact["originPath"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    let artifact_type = artifact["type"].as_str().unwrap_or("agent").to_string();
-    let name = artifact["name"].as_str().unwrap_or("unknown").to_string();
+    let artifact = fetch_artifact_record(&client, server, api_key, artifact_id).await?;
 
     let pending_item = PendingItem {
         _installation_id: String::new(),
         artifact_id: artifact_id.to_string(),
-        name: name.clone(),
-        artifact_type: artifact_type.clone(),
-        version: artifact["version"].as_u64().unwrap_or(1),
+        name: artifact.name.clone(),
+        artifact_type: artifact.artifact_type.clone(),
+        version: artifact.version,
         target_provider: target_provider.to_string(),
-        raw_content,
-        _origin_provider: artifact["originProvider"]
-            .as_str()
-            .unwrap_or("claude")
-            .to_string(),
-        origin_path,
+        raw_content: artifact.raw_content.clone(),
+        _origin_provider: artifact.origin_provider,
+        origin_path: artifact.origin_path,
+        ucir: if artifact.artifact_type == "plugin" {
+            serde_json::from_str(&artifact.raw_content).ok()
+        } else {
+            None
+        },
     };
 
-    let local_hash = install_pending_artifact(&pending_item)?;
+    let local_hash = install_pending_artifact(&client, server, api_key, &pending_item).await?;
     confirm_install(&client, server, api_key, artifact_id, &local_hash).await?;
 
-    eprintln!("Installed {} successfully.", name);
+    eprintln!("Installed {} successfully.", artifact.name);
     Ok(())
 }
 
@@ -834,10 +1197,59 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_claude_agent_path() {
-        let home = dirs::home_dir().unwrap();
+    fn test_resolve_claude_agent_path_project_scoped() {
+        // Project-scoped agents (.claude/ prefix) stay relative to project root
         let path = resolve_install_path("claude", ".claude/agents/review.md", "agent").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/agents/review.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_agent_path_global() {
+        // Global agents (~/.claude/ prefix) expand to home directory
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/agents/review.md", "agent").unwrap();
         assert_eq!(path, home.join(".claude/agents/review.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_skill_path_project_scoped() {
+        let path =
+            resolve_install_path("claude", ".claude/skills/review/SKILL.md", "skill").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/skills/review/SKILL.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_skill_path_global() {
+        let home = dirs::home_dir().unwrap();
+        let path =
+            resolve_install_path("claude", "~/.claude/skills/review/SKILL.md", "skill").unwrap();
+        assert_eq!(path, home.join(".claude/skills/review/SKILL.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_rule_path_project_scoped() {
+        let path = resolve_install_path("claude", ".claude/rules/security.md", "rule").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/rules/security.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_rule_path_global() {
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/rules/security.md", "rule").unwrap();
+        assert_eq!(path, home.join(".claude/rules/security.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_command_skill_project_scoped_stays_relative() {
+        let path = resolve_install_path("claude", ".claude/commands/foo.md", "skill").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/commands/foo.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_command_skill_global_remaps_to_skill_dir() {
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/commands/foo.md", "skill").unwrap();
+        assert_eq!(path, home.join(".claude/skills/foo/SKILL.md"));
     }
 
     #[test]
@@ -852,6 +1264,22 @@ mod tests {
         let home = dirs::home_dir().unwrap();
         let path = resolve_install_path("codex", "~/.codex/skills/review.md", "agent").unwrap();
         assert_eq!(path, home.join(".codex/skills/review.md"));
+    }
+
+    #[test]
+    fn test_rejects_parent_dir_in_home_scoped_path() {
+        let err = resolve_install_path("claude", "~/.claude/rules/../../secret.md", "rule")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent directory traversal"));
+    }
+
+    #[test]
+    fn test_rejects_parent_dir_in_project_scoped_path() {
+        let err = resolve_install_path("claude", ".claude/rules/../../secret.md", "rule")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent directory traversal"));
     }
 
     #[test]
@@ -894,11 +1322,42 @@ mod tests {
     }
 
     #[test]
-    fn test_install_pending_artifact_writes_file() {
+    fn test_extract_plugin_child_refs_reads_contents_shape() {
+        let value = serde_json::json!({
+            "kind": "plugin",
+            "contents": [
+                {
+                    "artifactId": "art-1",
+                    "originPath": ".claude/plugins/team/skills/review/SKILL.md",
+                    "name": "Review",
+                    "type": "skill"
+                },
+                ".claude/plugins/team/hooks/hooks.json"
+            ]
+        });
+
+        let refs = extract_plugin_child_refs(Some(&value)).unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].artifact_id.as_deref(), Some("art-1"));
+        assert_eq!(
+            refs[0].origin_path.as_deref(),
+            Some(".claude/plugins/team/skills/review/SKILL.md")
+        );
+        assert_eq!(refs[0].name.as_deref(), Some("Review"));
+        assert_eq!(refs[0].artifact_type.as_deref(), Some("skill"));
+        assert_eq!(
+            refs[1].origin_path.as_deref(),
+            Some(".claude/plugins/team/hooks/hooks.json")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_install_pending_artifact_writes_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let target_dir = tmp.path().join("sub");
         fs::create_dir_all(&target_dir).unwrap();
         let target = target_dir.join("test-artifact.md");
+        let client = reqwest::Client::builder().build().unwrap();
 
         // Use an absolute path as origin_path so resolve_install_path returns it as-is
         let item = PendingItem {
@@ -911,9 +1370,12 @@ mod tests {
             raw_content: "You are a test agent".to_string(),
             _origin_provider: "claude".to_string(),
             origin_path: target.to_string_lossy().to_string(),
+            ucir: None,
         };
 
-        let hash = install_pending_artifact(&item).unwrap();
+        let hash = install_pending_artifact(&client, "https://example.test", "token", &item)
+            .await
+            .unwrap();
         assert!(hash.starts_with("sha256-"));
         assert_eq!(fs::read_to_string(&target).unwrap(), "You are a test agent");
     }
