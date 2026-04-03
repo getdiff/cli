@@ -694,7 +694,17 @@ fn resolve_install_path(
 
     // If origin_path starts with ~/, expand it
     if let Some(stripped) = origin_path.strip_prefix("~/") {
-        return Ok(home.join(stripped));
+        if target_provider == "claude"
+            && artifact_type == "skill"
+            && stripped.contains(".claude/commands/")
+        {
+            let stem = Path::new(stripped)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            return sanitize_home_join(&home, &format!(".claude/skills/{}/SKILL.md", stem));
+        }
+        return sanitize_home_join(&home, stripped);
     }
 
     // Root-level files that should NOT be remapped to a subdirectory.
@@ -714,14 +724,14 @@ fn resolve_install_path(
     // Provider-specific path mapping for files inside subdirectories
     if origin_path.starts_with('.') || origin_path.contains('/') {
         let path = match target_provider {
-            "claude" => resolve_claude_path(origin_path, artifact_type, &home),
-            "codex" => resolve_codex_path(origin_path, artifact_type, &home),
-            "cursor" => resolve_cursor_path(origin_path, artifact_type),
-            "copilot" => resolve_copilot_path(origin_path, artifact_type),
-            "windsurf" => resolve_windsurf_path(origin_path, artifact_type, &home),
-            "amazonq" => resolve_amazonq_path(origin_path, artifact_type),
-            "aider" => PathBuf::from(origin_path),
-            _ => PathBuf::from(origin_path),
+            "claude" => resolve_claude_path(origin_path, artifact_type, &home)?,
+            "codex" => resolve_codex_path(origin_path, artifact_type, &home)?,
+            "cursor" => resolve_cursor_path(origin_path, artifact_type)?,
+            "copilot" => resolve_copilot_path(origin_path, artifact_type)?,
+            "windsurf" => resolve_windsurf_path(origin_path, artifact_type, &home)?,
+            "amazonq" => resolve_amazonq_path(origin_path, artifact_type)?,
+            "aider" => sanitize_project_relative_path(origin_path)?,
+            _ => sanitize_project_relative_path(origin_path)?,
         };
         return Ok(path);
     }
@@ -730,7 +740,7 @@ fn resolve_install_path(
     Ok(PathBuf::from(origin_path))
 }
 
-fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> PathBuf {
+fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> Result<PathBuf> {
     // Project-scoped artifacts have relative paths (e.g., ".claude/agents/review.md").
     // Global artifacts have tilde-prefixed paths (e.g., "~/.claude/agents/review.md")
     // which are expanded before reaching this function. If we get here with a
@@ -738,97 +748,133 @@ fn resolve_claude_path(origin_path: &str, artifact_type: &str, home: &Path) -> P
     let is_project_scoped =
         origin_path.starts_with(".claude/") && !origin_path.starts_with(".claude/projects/");
 
-    match artifact_type {
+    Ok(match artifact_type {
         "agent" => {
             if is_project_scoped {
-                PathBuf::from(origin_path)
+                sanitize_project_relative_path(origin_path)?
             } else {
                 let filename = Path::new(origin_path)
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy();
-                home.join(".claude/agents").join(filename.as_ref())
+                sanitize_home_join(home, &format!(".claude/agents/{}", filename))?
             }
         }
         "skill" => {
             if is_project_scoped {
-                PathBuf::from(origin_path)
+                sanitize_project_relative_path(origin_path)?
             } else if origin_path.contains("/commands/") {
-                // Legacy command: resolve to skills directory
                 let stem = Path::new(origin_path)
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy();
-                home.join(".claude/skills")
-                    .join(stem.as_ref())
-                    .join("SKILL.md")
+                sanitize_home_join(home, &format!(".claude/skills/{}/SKILL.md", stem))?
             } else {
-                home.join(origin_path)
+                sanitize_home_join(home, origin_path)?
             }
         }
         "rule" => {
             if is_project_scoped {
-                PathBuf::from(origin_path)
+                sanitize_project_relative_path(origin_path)?
             } else {
-                home.join(origin_path)
+                sanitize_home_join(home, origin_path)?
             }
         }
-        "hook" | "mcp" => home.join(".claude/settings.json"),
-        "memory" => home.join(origin_path),
-        _ => PathBuf::from(origin_path),
-    }
+        "hook" | "mcp" => sanitize_home_join(home, ".claude/settings.json")?,
+        "memory" => sanitize_home_join(home, origin_path)?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_codex_path(origin_path: &str, artifact_type: &str, home: &Path) -> PathBuf {
-    match artifact_type {
+fn sanitize_project_relative_path(origin_path: &str) -> Result<PathBuf> {
+    use std::path::Component;
+
+    let path = Path::new(origin_path);
+    if path.is_absolute() {
+        bail!(
+            "absolute project-relative path is not allowed: {}",
+            origin_path
+        );
+    }
+
+    let mut sanitized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => sanitized.push(component.as_os_str()),
+            Component::Normal(part) => sanitized.push(part),
+            Component::ParentDir => {
+                bail!("parent directory traversal is not allowed: {}", origin_path)
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "invalid path component in project-relative path: {}",
+                    origin_path
+                )
+            }
+        }
+    }
+    Ok(sanitized)
+}
+
+fn sanitize_home_join(home: &Path, relative_path: &str) -> Result<PathBuf> {
+    let sanitized = sanitize_project_relative_path(relative_path)?;
+    let joined = home.join(&sanitized);
+    if !joined.starts_with(home) {
+        bail!("resolved path escapes home directory: {}", relative_path);
+    }
+    Ok(joined)
+}
+
+fn resolve_codex_path(origin_path: &str, artifact_type: &str, home: &Path) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "agent" => {
             let filename = Path::new(origin_path)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy();
-            home.join(".codex/skills").join(filename.as_ref())
+            sanitize_home_join(home, &format!(".codex/skills/{}", filename))?
         }
-        "hook" => home.join(".codex/config.toml"),
-        _ => PathBuf::from(origin_path),
-    }
+        "hook" => sanitize_home_join(home, ".codex/config.toml")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_cursor_path(origin_path: &str, artifact_type: &str) -> PathBuf {
-    match artifact_type {
+fn resolve_cursor_path(origin_path: &str, artifact_type: &str) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "system_prompt" => {
             // Preserve the origin_path for files inside .cursor/rules/
-            PathBuf::from(origin_path)
+            sanitize_project_relative_path(origin_path)?
         }
-        "mcp" => PathBuf::from(".cursor/mcp.json"),
-        _ => PathBuf::from(origin_path),
-    }
+        "mcp" => sanitize_project_relative_path(".cursor/mcp.json")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_copilot_path(origin_path: &str, artifact_type: &str) -> PathBuf {
-    match artifact_type {
+fn resolve_copilot_path(origin_path: &str, artifact_type: &str) -> Result<PathBuf> {
+    Ok(match artifact_type {
         "agent" => {
             let filename = Path::new(origin_path)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy();
-            PathBuf::from(".github/agents").join(filename.as_ref())
+            sanitize_project_relative_path(&format!(".github/agents/{}", filename))?
         }
-        "system_prompt" => PathBuf::from(".github/copilot-instructions.md"),
-        _ => PathBuf::from(origin_path),
-    }
+        "system_prompt" => sanitize_project_relative_path(".github/copilot-instructions.md")?,
+        _ => sanitize_project_relative_path(origin_path)?,
+    })
 }
 
-fn resolve_windsurf_path(origin_path: &str, _artifact_type: &str, home: &Path) -> PathBuf {
+fn resolve_windsurf_path(origin_path: &str, _artifact_type: &str, home: &Path) -> Result<PathBuf> {
     // Only subdirectory file for windsurf is the MCP config
     if origin_path.contains("mcp_config") {
-        return home.join(".codeium/windsurf/mcp_config.json");
+        return sanitize_home_join(home, ".codeium/windsurf/mcp_config.json");
     }
-    PathBuf::from(origin_path)
+    sanitize_project_relative_path(origin_path)
 }
 
-fn resolve_amazonq_path(origin_path: &str, _artifact_type: &str) -> PathBuf {
+fn resolve_amazonq_path(origin_path: &str, _artifact_type: &str) -> Result<PathBuf> {
     // Preserve the origin path — it already includes the correct subdirectory
-    PathBuf::from(origin_path)
+    sanitize_project_relative_path(origin_path)
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,6 +1212,47 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_claude_skill_path_project_scoped() {
+        let path =
+            resolve_install_path("claude", ".claude/skills/review/SKILL.md", "skill").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/skills/review/SKILL.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_skill_path_global() {
+        let home = dirs::home_dir().unwrap();
+        let path =
+            resolve_install_path("claude", "~/.claude/skills/review/SKILL.md", "skill").unwrap();
+        assert_eq!(path, home.join(".claude/skills/review/SKILL.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_rule_path_project_scoped() {
+        let path = resolve_install_path("claude", ".claude/rules/security.md", "rule").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/rules/security.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_rule_path_global() {
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/rules/security.md", "rule").unwrap();
+        assert_eq!(path, home.join(".claude/rules/security.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_command_skill_project_scoped_stays_relative() {
+        let path = resolve_install_path("claude", ".claude/commands/foo.md", "skill").unwrap();
+        assert_eq!(path, PathBuf::from(".claude/commands/foo.md"));
+    }
+
+    #[test]
+    fn test_resolve_claude_command_skill_global_remaps_to_skill_dir() {
+        let home = dirs::home_dir().unwrap();
+        let path = resolve_install_path("claude", "~/.claude/commands/foo.md", "skill").unwrap();
+        assert_eq!(path, home.join(".claude/skills/foo/SKILL.md"));
+    }
+
+    #[test]
     fn test_resolve_copilot_agent_path() {
         let path =
             resolve_install_path("copilot", ".github/agents/review.agent.md", "agent").unwrap();
@@ -1177,6 +1264,22 @@ mod tests {
         let home = dirs::home_dir().unwrap();
         let path = resolve_install_path("codex", "~/.codex/skills/review.md", "agent").unwrap();
         assert_eq!(path, home.join(".codex/skills/review.md"));
+    }
+
+    #[test]
+    fn test_rejects_parent_dir_in_home_scoped_path() {
+        let err = resolve_install_path("claude", "~/.claude/rules/../../secret.md", "rule")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent directory traversal"));
+    }
+
+    #[test]
+    fn test_rejects_parent_dir_in_project_scoped_path() {
+        let err = resolve_install_path("claude", ".claude/rules/../../secret.md", "rule")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("parent directory traversal"));
     }
 
     #[test]

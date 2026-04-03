@@ -207,7 +207,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         None,
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Skills: ~/.claude/skills/*/SKILL.md
     let skill_start = artifacts.len();
@@ -222,7 +222,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         None,
         None,
         &mut artifacts,
-    );
+    )?;
     // Use parent directory name for skill display name instead of "SKILL"
     for a in &mut artifacts[skill_start..] {
         let parent_name = Path::new(&a.origin_path)
@@ -244,7 +244,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         None,
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Rules: ~/.claude/rules/**/*.md (recursive)
     scan_glob_files(
@@ -259,7 +259,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
         None,
         Some(&home.join(".claude/rules")),
         &mut artifacts,
-    );
+    )?;
 
     // User-level system prompt: ~/.claude/CLAUDE.md
     if let Some(a) = scan_single_file(
@@ -278,7 +278,7 @@ fn scan_claude_global() -> Result<Vec<ScannedArtifact>> {
     scan_claude_memory(&home, &mut artifacts);
 
     // Global plugins: ~/.claude/plugins/*/.claude-plugin/plugin.json
-    scan_claude_plugins(&home, &home.join(".claude/plugins"), None, &mut artifacts);
+    scan_claude_plugins(&home, &home.join(".claude/plugins"), None, &mut artifacts)?;
 
     Ok(artifacts)
 }
@@ -311,7 +311,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Project-level skills: {project}/.claude/skills/*/SKILL.md
     let skill_start = artifacts.len();
@@ -326,7 +326,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
     // Use parent directory name for skill display name instead of "SKILL"
     for a in &mut artifacts[skill_start..] {
         let parent_name = Path::new(&a.origin_path)
@@ -348,7 +348,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Project-level rules: {project}/.claude/rules/**/*.md
     scan_glob_files(
@@ -363,7 +363,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         Some(&project_root.join(".claude/rules")),
         &mut artifacts,
-    );
+    )?;
 
     // Project-level settings: {project}/.claude/settings.local.json
     scan_claude_settings_project(
@@ -378,7 +378,7 @@ fn scan_claude_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         &project_root.join(".claude/plugins"),
         Some(&project_name),
         &mut artifacts,
-    );
+    )?;
 
     Ok(artifacts)
 }
@@ -506,19 +506,19 @@ fn scan_claude_plugins(
     plugins_root: &Path,
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     let pattern = plugins_root.join("**/.claude-plugin/plugin.json");
     let pattern_str = pattern.to_string_lossy().to_string();
     let entries = match glob::glob(&pattern_str) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let canonical_scan_root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
     let canonical_boundary = match plugins_root.canonicalize() {
         Ok(path) => path,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
 
     for plugin_manifest in entries.flatten() {
@@ -561,13 +561,13 @@ fn scan_claude_plugins(
             &format!("{}/agents", plugin_origin_root),
             project,
             &mut plugin_children,
-        );
+        )?;
         scan_claude_plugin_skills(
             &plugin_root.join("skills"),
             &format!("{}/skills", plugin_origin_root),
             project,
             &mut plugin_children,
-        );
+        )?;
         scan_claude_plugin_child_markdown_dir(
             &plugin_root.join("commands"),
             ArtifactType::Skill,
@@ -575,7 +575,7 @@ fn scan_claude_plugins(
             &format!("{}/commands", plugin_origin_root),
             project,
             &mut plugin_children,
-        );
+        )?;
         scan_claude_plugin_hook_file(
             &plugin_root.join("hooks/hooks.json"),
             &format!("{}/hooks/hooks.json", plugin_origin_root),
@@ -620,6 +620,7 @@ fn scan_claude_plugins(
         });
         artifacts.extend(plugin_children);
     }
+    Ok(())
 }
 
 fn scan_claude_plugin_child_markdown_dir(
@@ -629,7 +630,7 @@ fn scan_claude_plugin_child_markdown_dir(
     origin_prefix: &str,
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     scan_glob_files(
         &dir.join("*.md"),
         artifact_type,
@@ -638,7 +639,7 @@ fn scan_claude_plugin_child_markdown_dir(
         project,
         Some(dir),
         artifacts,
-    );
+    )
 }
 
 fn scan_claude_plugin_skills(
@@ -646,7 +647,7 @@ fn scan_claude_plugin_skills(
     origin_prefix: &str,
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     let skill_start = artifacts.len();
     scan_glob_files(
         &skills_dir.join("*/SKILL.md"),
@@ -659,7 +660,7 @@ fn scan_claude_plugin_skills(
         project,
         Some(skills_dir),
         artifacts,
-    );
+    )?;
     for artifact in &mut artifacts[skill_start..] {
         let parent_name = Path::new(&artifact.origin_path)
             .parent()
@@ -670,6 +671,7 @@ fn scan_claude_plugin_skills(
             artifact.name = name_from_path(Path::new(&parent_name));
         }
     }
+    Ok(())
 }
 
 fn scan_claude_plugin_hook_file(
@@ -732,7 +734,7 @@ fn scan_codex_global() -> Result<Vec<ScannedArtifact>> {
         None,
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Hooks: ~/.codex/config.toml
     if let Some(a) = scan_single_file(
@@ -745,7 +747,7 @@ fn scan_codex_global() -> Result<Vec<ScannedArtifact>> {
     }
 
     // Home-local Codex plugins: ~/plugins/*/.codex-plugin/plugin.json
-    scan_codex_plugins(&home, &home.join("plugins"), None, &mut artifacts);
+    scan_codex_plugins(&home, &home.join("plugins"), None, &mut artifacts)?;
 
     Ok(artifacts)
 }
@@ -771,7 +773,7 @@ fn scan_codex_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         &project_root.join("plugins"),
         Some(&project_name),
         &mut artifacts,
-    );
+    )?;
 
     Ok(artifacts)
 }
@@ -781,19 +783,19 @@ fn scan_codex_plugins(
     plugins_root: &Path,
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     let pattern = plugins_root.join("**/.codex-plugin/plugin.json");
     let pattern_str = pattern.to_string_lossy().to_string();
     let entries = match glob::glob(&pattern_str) {
         Ok(entries) => entries,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let canonical_scan_root = scan_root
         .canonicalize()
         .unwrap_or_else(|_| scan_root.to_path_buf());
     let canonical_boundary = match plugins_root.canonicalize() {
         Ok(path) => path,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
 
     for plugin_manifest in entries.flatten() {
@@ -849,7 +851,7 @@ fn scan_codex_plugins(
                 project,
                 &mut plugin_children,
                 &canonical_manifest,
-            );
+            )?;
         } else {
             scan_codex_plugin_skills_dir(
                 &plugin_root.join("skills"),
@@ -860,7 +862,7 @@ fn scan_codex_plugins(
                 ),
                 project,
                 &mut plugin_children,
-            );
+            )?;
         }
         if let Some(hooks_path) = plugin_meta.get("hooks").and_then(|value| value.as_str()) {
             scan_codex_plugin_hook_path(
@@ -871,7 +873,7 @@ fn scan_codex_plugins(
                 project,
                 &mut plugin_children,
                 &canonical_manifest,
-            );
+            )?;
         }
         if let Some(mcp_path) = plugin_meta
             .get("mcpServers")
@@ -885,7 +887,7 @@ fn scan_codex_plugins(
                 project,
                 &mut plugin_children,
                 &canonical_manifest,
-            );
+            )?;
         }
 
         let plugin_ucir = build_plugin_ucir(&plugin_name, plugin_description, &plugin_children);
@@ -902,6 +904,7 @@ fn scan_codex_plugins(
         });
         artifacts.extend(plugin_children);
     }
+    Ok(())
 }
 
 fn scan_codex_plugin_skills_path(
@@ -912,14 +915,14 @@ fn scan_codex_plugin_skills_path(
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
     manifest_path: &Path,
-) {
+) -> Result<()> {
     let resolved = match resolve_plugin_relative_path(plugin_root, skills_path) {
         Some(path) => path,
-        None => return,
+        None => return Ok(()),
     };
     let canonical_root = match plugin_root.canonicalize() {
         Ok(path) => path,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     match resolved.canonicalize() {
         Ok(path) if !path.starts_with(&canonical_root) => {
@@ -927,15 +930,15 @@ fn scan_codex_plugin_skills_path(
                 "  Skipping Codex plugin skill path outside plugin boundary: {}",
                 manifest_path.display()
             );
-            return;
+            return Ok(());
         }
-        Err(_) => return,
+        Err(_) => return Ok(()),
         _ => {}
     }
 
     if resolved.is_dir() {
         let origin_prefix = origin_path_from_root(&resolved, scan_root, global_scope);
-        scan_codex_plugin_skills_dir(&resolved, &origin_prefix, project, artifacts);
+        scan_codex_plugin_skills_dir(&resolved, &origin_prefix, project, artifacts)?;
     } else if let Some(mut skill) = scan_single_file(
         &resolved,
         ArtifactType::Skill,
@@ -945,6 +948,7 @@ fn scan_codex_plugin_skills_path(
         skill.origin_project = project.map(ToString::to_string);
         artifacts.push(skill);
     }
+    Ok(())
 }
 
 fn scan_codex_plugin_skills_dir(
@@ -952,7 +956,7 @@ fn scan_codex_plugin_skills_dir(
     origin_prefix: &str,
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     let skill_start = artifacts.len();
     scan_glob_files(
         &skills_dir.join("*/SKILL.md"),
@@ -965,7 +969,7 @@ fn scan_codex_plugin_skills_dir(
         project,
         Some(skills_dir),
         artifacts,
-    );
+    )?;
     for artifact in &mut artifacts[skill_start..] {
         let parent_name = Path::new(&artifact.origin_path)
             .parent()
@@ -985,7 +989,8 @@ fn scan_codex_plugin_skills_dir(
         project,
         Some(skills_dir),
         artifacts,
-    );
+    )?;
+    Ok(())
 }
 
 fn scan_codex_plugin_hook_path(
@@ -996,14 +1001,14 @@ fn scan_codex_plugin_hook_path(
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
     manifest_path: &Path,
-) {
+) -> Result<()> {
     let resolved = match resolve_plugin_relative_path(plugin_root, hooks_path) {
         Some(path) => path,
-        None => return,
+        None => return Ok(()),
     };
     let canonical_root = match plugin_root.canonicalize() {
         Ok(path) => path,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     match resolved.canonicalize() {
         Ok(path) if !path.starts_with(&canonical_root) => {
@@ -1011,15 +1016,15 @@ fn scan_codex_plugin_hook_path(
                 "  Skipping Codex plugin hook path outside plugin boundary: {}",
                 manifest_path.display()
             );
-            return;
+            return Ok(());
         }
-        Err(_) => return,
+        Err(_) => return Ok(()),
         _ => {}
     }
 
     let content = match std::fs::read_to_string(&resolved) {
         Ok(content) if !content.trim().is_empty() => content,
-        _ => return,
+        _ => return Ok(()),
     };
     artifacts.push(ScannedArtifact {
         artifact_type: ArtifactType::Hook,
@@ -1030,6 +1035,7 @@ fn scan_codex_plugin_hook_path(
         raw_content: content.clone(),
         content_hash: sha256_hex(&content),
     });
+    Ok(())
 }
 
 fn scan_codex_plugin_mcp_path(
@@ -1040,14 +1046,14 @@ fn scan_codex_plugin_mcp_path(
     project: Option<&str>,
     artifacts: &mut Vec<ScannedArtifact>,
     manifest_path: &Path,
-) {
+) -> Result<()> {
     let resolved = match resolve_plugin_relative_path(plugin_root, mcp_path) {
         Some(path) => path,
-        None => return,
+        None => return Ok(()),
     };
     let canonical_root = match plugin_root.canonicalize() {
         Ok(path) => path,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     match resolved.canonicalize() {
         Ok(path) if !path.starts_with(&canonical_root) => {
@@ -1055,9 +1061,9 @@ fn scan_codex_plugin_mcp_path(
                 "  Skipping Codex plugin MCP path outside plugin boundary: {}",
                 manifest_path.display()
             );
-            return;
+            return Ok(());
         }
-        Err(_) => return,
+        Err(_) => return Ok(()),
         _ => {}
     }
 
@@ -1068,6 +1074,7 @@ fn scan_codex_plugin_mcp_path(
         project,
         artifacts,
     );
+    Ok(())
 }
 
 fn resolve_plugin_relative_path(plugin_root: &Path, plugin_path: &str) -> Option<PathBuf> {
@@ -1098,7 +1105,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
     scan_glob_files(
         &project_root.join(".cursor/rules/*.md"),
         ArtifactType::Rule,
@@ -1107,7 +1114,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Legacy system prompt: {project}/.cursorrules
     if let Some(mut a) = scan_single_file(
@@ -1129,7 +1136,7 @@ fn scan_cursor_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // MCP: {project}/.cursor/mcp.json (with credential redaction)
     scan_json_mcp_file(
@@ -1160,7 +1167,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Path-scoped instructions (rules): {project}/.github/instructions/*.instructions.md
     scan_glob_files(
@@ -1171,7 +1178,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Prompt files (skills): {project}/.github/prompts/*.prompt.md
     scan_glob_files(
@@ -1182,7 +1189,7 @@ fn scan_copilot_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // System prompt: {project}/.github/copilot-instructions.md
     if let Some(mut a) = scan_single_file(
@@ -1242,7 +1249,7 @@ fn scan_windsurf_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Legacy system prompt: {project}/.windsurfrules (root-level file)
     if let Some(mut a) = scan_single_file(
@@ -1286,7 +1293,7 @@ fn scan_amazonq_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     // Rules: {project}/.amazonq/rules/*.md
     scan_glob_files(
@@ -1297,7 +1304,7 @@ fn scan_amazonq_project(project_root: &Path) -> Result<Vec<ScannedArtifact>> {
         Some(&project_name),
         None,
         &mut artifacts,
-    );
+    )?;
 
     Ok(artifacts)
 }
@@ -1438,17 +1445,31 @@ fn scan_glob_files(
     project: Option<&str>,
     boundary: Option<&Path>,
     artifacts: &mut Vec<ScannedArtifact>,
-) {
+) -> Result<()> {
     let pattern_str = pattern.to_string_lossy().to_string();
-    let entries = match glob::glob(&pattern_str) {
+    let mut entries = match glob::glob(&pattern_str) {
         Ok(e) => e,
-        Err(_) => return,
-    };
+        Err(_) => return Ok(()),
+    }
+    .peekable();
 
-    // Compute canonical boundary once: prefer explicit boundary, fall back to pattern parent
-    let canonical_boundary = boundary
-        .and_then(|b| b.canonicalize().ok())
-        .or_else(|| pattern.parent().and_then(|p| p.canonicalize().ok()));
+    if entries.peek().is_none() {
+        return Ok(());
+    }
+
+    // Fail closed for explicit boundaries; only fall back to the pattern parent when
+    // no explicit boundary was provided.
+    let canonical_boundary = if let Some(boundary) = boundary {
+        Some(boundary.canonicalize().map_err(|error| {
+            anyhow::anyhow!(
+                "failed to canonicalize scan boundary {}: {}",
+                boundary.display(),
+                error
+            )
+        })?)
+    } else {
+        pattern.parent().and_then(|p| p.canonicalize().ok())
+    };
 
     for entry in entries.flatten() {
         // Validate entry is within the boundary (prevents symlink escapes)
@@ -1478,6 +1499,7 @@ fn scan_glob_files(
             });
         }
     }
+    Ok(())
 }
 
 fn scan_json_mcp_file(
@@ -1807,7 +1829,8 @@ mod tests {
             &tmp.path().join(".claude/plugins"),
             None,
             &mut artifacts,
-        );
+        )
+        .unwrap();
 
         let plugin = artifacts
             .iter()
@@ -1923,7 +1946,8 @@ mod tests {
             &tmp.path().join("plugins"),
             None,
             &mut artifacts,
-        );
+        )
+        .unwrap();
 
         let plugin = artifacts
             .iter()
