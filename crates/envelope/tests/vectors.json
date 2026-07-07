@@ -1,0 +1,390 @@
+{
+  "format": "diff-envelope-v1",
+  "suite": "ECDH-P256+HKDF-SHA256+A256GCM",
+  "note": "FROZEN. Both the TypeScript (app/src/lib/envelope) and Rust (crates/envelope) implementations must pass these. Regenerate only on a deliberate format change.",
+  "deterministic_encrypt": [
+    {
+      "name": "single device wrap",
+      "plaintext": "c2tfbGl2ZV9ESUZGVkVDVE9SXzAwMDE",
+      "dek": "HyYtNDtCSVBXXmVsc3qBiI-WnaSrsrnAx87V3OPq8fg",
+      "valueNonce": "PkVMU1phaG92fYSL",
+      "recipients": [
+        {
+          "kid": "device-1",
+          "role": "device",
+          "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+        }
+      ],
+      "wrapMaterial": [
+        {
+          "ephemeralPrivateKeyJwk": {
+            "key_ops": [
+              "deriveBits"
+            ],
+            "ext": true,
+            "kty": "EC",
+            "x": "WAGzZoQtUuVcGNSW_ytuX71MR6z7_InYXGDDCVLlxN4",
+            "y": "eSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "crv": "P-256",
+            "d": "2yIhnhmxAv2zTjkxIqTUq0uk9sySBPpOM33EslEHgdI"
+          },
+          "ephemeralScalar": "2yIhnhmxAv2zTjkxIqTUq0uk9sySBPpOM33EslEHgdI",
+          "ephemeralPublicKeySec1": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+          "nonce": "XWRrcnmAh46VnKOq"
+        }
+      ],
+      "expect": {
+        "ct": "rrD-h1zyKBpKRxwfRTzEyKlvCIRIJ-9WMhoZ9ZX_M3j3EEhkLHzn",
+        "wraps": [
+          {
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "wdek": "nFb4V1QLCclv9zj3OsAxQaUVvoy719h0IrZ84o86NGHBjnyKGLHcs53SlOd5Jlp2"
+          }
+        ]
+      }
+    },
+    {
+      "name": "device + recovery wraps",
+      "plaintext": "eyJqc29uIjoicGF5bG9hZCIsImdjcCI6InNlcnZpY2UtYWNjb3VudCJ9",
+      "dek": "fIOKkZifpq20u8LJ0Nfe5ezz-gEIDxYdJCsyOUBHTlU",
+      "valueNonce": "m6KpsLe-xczT2uHo",
+      "recipients": [
+        {
+          "kid": "device-1",
+          "role": "device",
+          "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+        },
+        {
+          "kid": "recovery-1",
+          "role": "recovery",
+          "publicKeySec1": "BFwKLZh85y1MoHVJJvQXohERbU4Z6sk1EQwkgNJcJaDJ7b-K7On5TmR8W1BsqtO1DvqHkpMPpTzo8C4Mltofld4"
+        }
+      ],
+      "wrapMaterial": [
+        {
+          "ephemeralPrivateKeyJwk": {
+            "key_ops": [
+              "deriveBits"
+            ],
+            "ext": true,
+            "kty": "EC",
+            "x": "WAGzZoQtUuVcGNSW_ytuX71MR6z7_InYXGDDCVLlxN4",
+            "y": "eSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "crv": "P-256",
+            "d": "2yIhnhmxAv2zTjkxIqTUq0uk9sySBPpOM33EslEHgdI"
+          },
+          "ephemeralScalar": "2yIhnhmxAv2zTjkxIqTUq0uk9sySBPpOM33EslEHgdI",
+          "ephemeralPublicKeySec1": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+          "nonce": "usHIz9bd5Ovy-QAH"
+        },
+        {
+          "ephemeralPrivateKeyJwk": {
+            "key_ops": [
+              "deriveBits"
+            ],
+            "ext": true,
+            "kty": "EC",
+            "x": "Lb5ae_R64aut7L-VhQLy73ZuwFjIJqqeux18NDd7m2c",
+            "y": "7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "crv": "P-256",
+            "d": "JKfvLq979q30aH3nj4bGoIkJEfXrs7s2kXQEMyofb2s"
+          },
+          "ephemeralScalar": "JKfvLq979q30aH3nj4bGoIkJEfXrs7s2kXQEMyofb2s",
+          "ephemeralPublicKeySec1": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+          "nonce": "2eDn7vX8AwoRGB8m"
+        }
+      ],
+      "expect": {
+        "ct": "jxVNVt7pQoGEO6OCzfSjsDL2avJB_rkIOAYjTtczmojy8cWZjXG6XhUbDLiOOkdmMrNg04UZYcB1rA",
+        "wraps": [
+          {
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "wdek": "50emm3-x1Zurjy5p3ZTCuVU1r8tP48jNrY9fGxAC7WgtZDdLz9UTWgZsP-xNuD_e"
+          },
+          {
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "wdek": "vQI8FR3VjYN65AAGIzakS88nrEjyp0g8uDm8JvcICOJw6aCTs9A0qtmD-aJQzgZu"
+          }
+        ]
+      }
+    }
+  ],
+  "decrypt": [
+    {
+      "name": "open with first wrap (device)",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "kB-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ]
+      },
+      "recipient": {
+        "kid": "device-1",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "EVJxOZUlWJb-vZJUfoTbL9_zUPXGRzhlrHmi5t9uNA4",
+          "y": "yD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo",
+          "crv": "P-256",
+          "d": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g"
+        },
+        "privateScalar": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g",
+        "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+      },
+      "expect": {
+        "plaintext": "c2tfbGl2ZV9ESUZGVkVDVE9SXzAwMDI",
+        "dek": "-P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytE"
+      }
+    },
+    {
+      "name": "open with second wrap (recovery)",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "kB-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ]
+      },
+      "recipient": {
+        "kid": "recovery-1",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "XAotmHznLUygdUkm9BeiERFtThnqyTURDCSA0lwloMk",
+          "y": "7b-K7On5TmR8W1BsqtO1DvqHkpMPpTzo8C4Mltofld4",
+          "crv": "P-256",
+          "d": "1_z1SFQvFTVyeIloMlJEFWMcWVh82ZBJCiqsha8ljsM"
+        },
+        "privateScalar": "1_z1SFQvFTVyeIloMlJEFWMcWVh82ZBJCiqsha8ljsM",
+        "publicKeySec1": "BFwKLZh85y1MoHVJJvQXohERbU4Z6sk1EQwkgNJcJaDJ7b-K7On5TmR8W1BsqtO1DvqHkpMPpTzo8C4Mltofld4"
+      },
+      "expect": {
+        "plaintext": "c2tfbGl2ZV9ESUZGVkVDVE9SXzAwMDI",
+        "dek": "-P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytE"
+      }
+    },
+    {
+      "name": "no wrap for holder kid",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "kB-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ]
+      },
+      "recipient": {
+        "kid": "device-2",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "KehkTojj4UlXrTVNpb0Y0pSsKQjHQ7_xQVChyD_gno8",
+          "y": "cplufgR4Pk4_O8TYBBgBNqnPmjMOTUTiVZX_yN9Lcug",
+          "crv": "P-256",
+          "d": "2FSwJHkapeIenDPLbx8ueTwl4VTGMGLudOVYvz8DT-s"
+        },
+        "privateScalar": "2FSwJHkapeIenDPLbx8ueTwl4VTGMGLudOVYvz8DT-s",
+        "publicKeySec1": "BCnoZE6I4-FJV601TaW9GNKUrCkIx0O_8UFQocg_4J6PcplufgR4Pk4_O8TYBBgBNqnPmjMOTUTiVZX_yN9Lcug"
+      },
+      "expect": {
+        "error": "no_wrap"
+      }
+    },
+    {
+      "name": "tampered ct",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "bx-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ]
+      },
+      "recipient": {
+        "kid": "device-1",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "EVJxOZUlWJb-vZJUfoTbL9_zUPXGRzhlrHmi5t9uNA4",
+          "y": "yD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo",
+          "crv": "P-256",
+          "d": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g"
+        },
+        "privateScalar": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g",
+        "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+      },
+      "expect": {
+        "error": "tamper"
+      }
+    },
+    {
+      "name": "tampered wdek",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "kB-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "gGvlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ]
+      },
+      "recipient": {
+        "kid": "device-1",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "EVJxOZUlWJb-vZJUfoTbL9_zUPXGRzhlrHmi5t9uNA4",
+          "y": "yD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo",
+          "crv": "P-256",
+          "d": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g"
+        },
+        "privateScalar": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g",
+        "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+      },
+      "expect": {
+        "error": "tamper"
+      }
+    },
+    {
+      "name": "unknown-role wrap and unknown fields are ignored",
+      "envelope": {
+        "v": 1,
+        "alg": "ECDH-P256+HKDF-SHA256+A256GCM",
+        "ct": "kB-gWFEFIodWJCvQPN987pP7xc1zzjgQ5z2vlIKLxgjmqCwTigk0",
+        "n": "Fx4lLDM6QUhPVl1k",
+        "wraps": [
+          {
+            "kid": "svc-1",
+            "role": "service",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs",
+            "future": 1
+          },
+          {
+            "kid": "device-1",
+            "role": "device",
+            "epk": "BFgBs2aELVLlXBjUlv8rbl-9TEes-_yJ2FxgwwlS5cTeeSzl9KhVUQiEzFHWc9YKxaK3APlG93CzOg3tr7L_Odw",
+            "n": "Nj1ES1JZYGdudXyD",
+            "wdek": "f2vlE7XcZYfYij5IDDiVo0ukfq5mMx2JVszHRXb75GCkF2-suKaZwnGPps-aLovs"
+          },
+          {
+            "kid": "recovery-1",
+            "role": "recovery",
+            "epk": "BC2-Wnv0euGrrey_lYUC8u92bsBYyCaqnrsdfDQ3e5tn7a7EYmwRgN7bK0QIuPJ-4sR47I9-U1nriNgmyxy8Oao",
+            "n": "VVxjanF4f4aNlJui",
+            "wdek": "dQhooIIsekdEFoTNtZeremH-rJ8pWWz7zgNtpl3aYKWWnPLw1FXyeLYT5PQHv4Hm"
+          }
+        ],
+        "future_field": "ignore-me"
+      },
+      "recipient": {
+        "kid": "device-1",
+        "privateKeyJwk": {
+          "key_ops": [
+            "deriveBits"
+          ],
+          "ext": true,
+          "kty": "EC",
+          "x": "EVJxOZUlWJb-vZJUfoTbL9_zUPXGRzhlrHmi5t9uNA4",
+          "y": "yD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo",
+          "crv": "P-256",
+          "d": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g"
+        },
+        "privateScalar": "yKrGOQ6k1YPOhUVjh9ZT1JxYduCNAModTVlct87EZ1g",
+        "publicKeySec1": "BBFScTmVJViW_r2SVH6E2y_f81D1xkc4Zax5oubfbjQOyD2zroDOO8UzRvfle2ZcqM_Vu3EbcMqzX3r_7ytjaUo"
+      },
+      "expect": {
+        "plaintext": "c2tfbGl2ZV9ESUZGVkVDVE9SXzAwMDI",
+        "dek": "-P8GDRQbIikwNz5FTFNaYWhvdn2Ei5KZoKeutbzDytE"
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+[package]
+name = "getdiff-envelope"
+version = "0.1.0"
+edition = "2024"
+description = "Diff Envelope Format v1 — E2E credential envelope (ECDH-P256+HKDF-SHA256+A256GCM)"
+license = "MIT"
+
+[dependencies]
+p256 = { version = "0.13", features = ["ecdh"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = "0.10"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand_core = { version = "0.6", features = ["getrandom"] }
