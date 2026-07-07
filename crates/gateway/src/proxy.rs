@@ -323,7 +323,16 @@ pub async fn run_proxy(
 
     // Perform initial config sync before accepting traffic, then spawn background loop.
     crate::daemon_config::initial_sync(&state, &control_plane_url, &api_token).await;
-    crate::daemon_config::spawn_config_sync(state.clone(), control_plane_url.clone(), api_token);
+    crate::daemon_config::spawn_config_sync(
+        state.clone(),
+        control_plane_url.clone(),
+        api_token.clone(),
+    );
+
+    // E2E envelope credential sync (Diff app API, client-side decrypt).
+    let app_url = crate::envelope_credentials::read_app_url();
+    crate::envelope_credentials::initial_sync(&state, &app_url, &api_token).await;
+    crate::envelope_credentials::spawn_sync(state.clone(), app_url, api_token);
 
     // Bind per-agent listeners (each port is tagged with an agent name).
     for (agent_name, agent_port) in &agent_ports {
