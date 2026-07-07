@@ -400,7 +400,7 @@ mod tests {
     fn add_wraps_preserves_ct_and_is_idempotent() {
         let (r1, h1) = recipient("device-1", "device");
         let (r2, h2) = recipient("org-admin-1", "org_admin");
-        let envelope = seal(b"value", &[r1.clone()]).unwrap();
+        let envelope = seal(b"value", std::slice::from_ref(&r1)).unwrap();
         let promoted = add_wraps(&envelope, &h1, &[r2, r1]).unwrap();
         assert_eq!(promoted.ct, envelope.ct);
         assert_eq!(promoted.n, envelope.n);
